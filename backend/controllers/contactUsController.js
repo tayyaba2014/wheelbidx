@@ -2,8 +2,6 @@ import pool from "../config/db.js";
 import nodemailer from "nodemailer";
 import sgMail from "@sendgrid/mail";
 
-
-
 export const getContactUs = async (req, res) => {
   try {
     const [result] = await pool.query(
@@ -69,9 +67,6 @@ export const deleteContactUs = async (req, res) => {
   }
 };
 
-
-
-
 export const getSuggestions = async (req, res) => {
   try {
     const [result] = await pool.query(`SELECT * FROM tbl_suggestions`);
@@ -92,27 +87,20 @@ export const getPartner = async (req, res) => {
   }
 };
 
-
-
-
-
-
-
- 
 export const contactFrom = async (req, res) => {
   try {
     const { subject, email, contactNumber, description } = req.body;
     if (!subject || !email || !contactNumber || !description) {
       return res.status(400).json({ message: "All fields are required" });
     }
- 
+
     const [result] = await pool.query(
       `INSERT INTO tbl_contact_form (subject, email, contactNumber, description) VALUES (?, ?, ?, ?)`,
       [subject, email, contactNumber, description]
     );
- 
+
     sgMail.setApiKey(process.env.SENDGRID_API_KEY);
- 
+
     const emailHtml = (description) => `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -179,7 +167,7 @@ export const contactFrom = async (req, res) => {
   </div>
 </body>
 </html>`;
- 
+
     const msg = {
       to: process.env.MAIL_USER,
       from: {
@@ -190,37 +178,44 @@ export const contactFrom = async (req, res) => {
       subject,
       html: emailHtml(description),
     };
- 
+
     await sgMail.send(msg);
- 
+
     const id = result.insertId;
     const [contact] = await pool.query(
       `SELECT * FROM tbl_contact_form WHERE id = ?`,
       [id]
     );
- 
+
     res.status(201).json({ ...contact[0] });
   } catch (error) {
     console.error("Error in contactFrom:", error);
     res.status(500).json({ message: "Internal server error" });
   }
 };
- 
- 
+
 export const becomePartnerForm = async (req, res) => {
   try {
-    const { fullName, contactNumber, email, businessType, city, description } = req.body;
-    if (!businessType || !email || !city || !description || !fullName || !contactNumber) {
+    const { fullName, contactNumber, email, businessType, city, description } =
+      req.body;
+    if (
+      !businessType ||
+      !email ||
+      !city ||
+      !description ||
+      !fullName ||
+      !contactNumber
+    ) {
       return res.status(400).json({ message: "All fields are required" });
     }
- 
+
     const [result] = await pool.query(
       `INSERT INTO tbl_become_partner (name, contact, email, bussinessType, city, message) VALUES (?, ?, ?, ?, ?, ?)`,
       [fullName, contactNumber, email, businessType, city, description]
     );
- 
+
     sgMail.setApiKey(process.env.SENDGRID_API_KEY);
- 
+
     const emailHtml = () => `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -283,7 +278,7 @@ export const becomePartnerForm = async (req, res) => {
   </div>
 </body>
 </html>`;
- 
+
     const msg = {
       to: process.env.MAIL_USER,
       from: {
@@ -294,15 +289,15 @@ export const becomePartnerForm = async (req, res) => {
       subject: "New Become Partner Request",
       html: emailHtml(),
     };
- 
+
     await sgMail.send(msg);
- 
+
     const id = result.insertId;
     const [partner] = await pool.query(
       `SELECT * FROM tbl_become_partner WHERE id = ?`,
       [id]
     );
- 
+
     res.status(201).json({ ...partner[0] });
   } catch (error) {
     console.error("Error in becomePartnerForm:", error);
@@ -310,21 +305,20 @@ export const becomePartnerForm = async (req, res) => {
   }
 };
 
- 
 export const giveSuggestion = async (req, res) => {
   try {
     const { name, email, contactNumber, suggestion } = req.body;
     if (!name || !email || !contactNumber || !suggestion) {
       return res.status(400).json({ message: "All fields are required" });
     }
- 
+
     const [result] = await pool.query(
       `INSERT INTO tbl_suggestions (name, email, contactNumber, suggestion) VALUES (?, ?, ?, ?)`,
       [name, email, contactNumber, suggestion]
     );
- 
+
     sgMail.setApiKey(process.env.SENDGRID_API_KEY);
- 
+
     const emailHtml = () => `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -389,7 +383,7 @@ export const giveSuggestion = async (req, res) => {
   </div>
 </body>
 </html>`;
- 
+
     const msg = {
       to: process.env.MAIL_USER,
       from: {
@@ -400,20 +394,63 @@ export const giveSuggestion = async (req, res) => {
       subject: "A Customer Suggestion has come!",
       html: emailHtml(),
     };
- 
+
     await sgMail.send(msg);
- 
+
     const id = result.insertId;
     const [suggestionRow] = await pool.query(
       `SELECT * FROM tbl_suggestions WHERE id = ?`,
       [id]
     );
- 
+
     res.status(201).json({ ...suggestionRow[0] });
   } catch (error) {
     console.error("Error in giveSuggestion:", error);
     res.status(500).json({ message: "Internal server error" });
   }
 };
- 
- 
+
+export const subscribeUser = async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res
+        .status(400)
+        .send({ message: "Bad Request! Email is required." });
+    }
+
+    const [addEmail] = await pool.query(
+      `INSERT INTO tbl_subscribe (email) VALUES (?)`,
+      [email]
+    );
+
+    const insertID = addEmail.insertId;
+
+    if (!insertID) {
+      return res.status(404).send({ message: "Failed to add Email!" });
+    }
+
+    const [getLastEmail] = await pool.query(
+      `SELECT * FROM tbl_subscribe WHERE id = ?`,
+      [insertID]
+    );
+
+    res.status(200).send(getLastEmail[0]);
+  } catch (error) {
+    console.error("Error updating seriesSearch:", error);
+    return res.status(500).json({ message: "Internal Server Error!" });
+  }
+};
+
+export const getSubscribeUser = async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `select * from tbl_subscribe where status = 'Y'`
+    );
+
+    res.status(200).send(rows);
+  } catch (error) {
+    console.error("Error updating seriesSearch:", error);
+    return res.status(500).json({ message: "Internal Server Error!" });
+  }
+};

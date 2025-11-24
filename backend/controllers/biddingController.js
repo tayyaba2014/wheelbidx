@@ -5,7 +5,6 @@ import moment from "moment-timezone";
 import cron from "node-cron";
 import { io } from "../socket.js";
 
-
 export const createBid = async (req, res) => {
   try {
     const { userId, vehicleId, sellerOffer, startTime, endTime, saleStatus } =
@@ -99,35 +98,43 @@ export const createBid = async (req, res) => {
   }
 };
 
-export const updateCreateBid = async (req, res) =>{
-  try{
+export const updateCreateBid = async (req, res) => {
+  try {
     const id = req.params.id;
     const { userId, vehicleId, startTime, endTime, saleStatus } = req.body;
-    const requiredFields = ["userId", "vehicleId", "startTime", "endTime", "saleStatus"];
+    const requiredFields = [
+      "userId",
+      "vehicleId",
+      "startTime",
+      "endTime",
+      "saleStatus",
+    ];
 
-    const missingField = requiredFields.filter(field=> !req.body[requiredFields]);
+    const missingField = requiredFields.filter(
+      (field) => !req.body[requiredFields]
+    );
 
-    if(missingField.lenght > 0){
-      return res.status(400).send({message: `Mssing ${missingField}`});
+    if (missingField.lenght > 0) {
+      return res.status(400).send({ message: `Mssing ${missingField}` });
     }
 
-    const [update] = await pool.query(`update tbl_bid set userId = ?, vehicleId = ?, startTime = ?, endTime = ?, saleStatus = ? where id = ?`,
+    const [update] = await pool.query(
+      `update tbl_bid set userId = ?, vehicleId = ?, startTime = ?, endTime = ?, saleStatus = ? where id = ?`,
       [userId, vehicleId, startTime, endTime, saleStatus, id]
     );
 
-    if(update.affectedRows < 0){
-      return res.status(404).send({message: "Unable to update Bid!"});
+    if (update.affectedRows < 0) {
+      return res.status(404).send({ message: "Unable to update Bid!" });
     }
 
-    const [updateBid] = await pool.query(`select * from tbl_bid where id = ?`,
-      [id]
-    );
+    const [updateBid] = await pool.query(`select * from tbl_bid where id = ?`, [
+      id,
+    ]);
 
-    res.status(200).send({...updateBid[0]});
-
-  }catch(error){
-    res.status(500).send({message: "Internal Server Error!"});
-    console.error({error: error.message});
+    res.status(200).send({ ...updateBid[0] });
+  } catch (error) {
+    res.status(500).send({ message: "Internal Server Error!" });
+    console.error({ error: error.message });
   }
 };
 
@@ -148,28 +155,44 @@ export const startBidding = async (req, res) => {
       });
     }
 
-    const [rows] = await pool.query(`select * from tbl_bid where vehicleId = ? order by createdAt desc`, [vehicleId]);
+    // 🔹 Get the highest bid (whether it's maxBid or monsterBid)
+    const [rows] = await pool.query(
+      `SELECT 
+         GREATEST(
+           IFNULL(MAX(maxBid), 0),
+           IFNULL(MAX(MonsterBid), 0)
+         ) AS highestBid
+       FROM tbl_bid 
+       WHERE vehicleId = ?`,
+      [vehicleId]
+    );
 
-    const highprice = rows[0].MonsterBid;
+    const highestBid = rows[0]?.highestBid || 0;
+    const newBidValue = Number(maxBid || monsterBid);
 
-    if(highprice >= monsterBid){
-      res.status(404).send({message: "Please Enter a greater amount than the last entry!"});
-      return;
+    // 🔹 Check if new bid is greater than the current highest bid
+    if (newBidValue <= highestBid) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        message: `Your bid is too low. Current highest bid is ${highestBid}. Please enter a higher amount.`,
+      });
     }
 
-    console.log("userID: ->",rows[0].MonsterBid);
+    console.log(`✅ Highest bid: ${highestBid}, New bid: ${newBidValue}`);
 
     if (maxBid && monsterBid) {
       await connection.rollback();
       return res.status(400).json({
         success: false,
-        message: "Cannot submit both maxBid and monsterBid",
+        message: "Cannot submit both maxBid and monsterBid.",
       });
     }
 
     const yourOffer = maxBid || monsterBid;
     const bidType = maxBid ? "Max Bid" : "Monster Bid";
 
+    // 🔹 Validate vehicle availability
     const [vehicle] = await connection.query(
       'SELECT * FROM tbl_vehicles WHERE id = ? AND vehicleStatus = "Y"',
       [vehicleId]
@@ -179,10 +202,11 @@ export const startBidding = async (req, res) => {
       await connection.rollback();
       return res.status(404).json({
         success: false,
-        message: "Vehicle not found or not available for bidding",
+        message: "Vehicle not found or not available for bidding.",
       });
     }
 
+    // 🔹 Get current auction info
     const [currentBids] = await connection.query(
       "SELECT * FROM tbl_bid WHERE vehicleId = ?",
       [vehicleId]
@@ -192,7 +216,7 @@ export const startBidding = async (req, res) => {
       await connection.rollback();
       return res.status(400).json({
         success: false,
-        message: "No active auction found for this vehicle",
+        message: "No active auction found for this vehicle.",
       });
     }
 
@@ -203,13 +227,14 @@ export const startBidding = async (req, res) => {
       await connection.rollback();
       return res.status(400).json({
         success: false,
-        message: "Bidding is already completed for this vehicle",
+        message: "Bidding is already completed for this vehicle.",
       });
     }
 
+    // 🔹 Insert new valid bid
     const [insertBid] = await connection.query(
       `INSERT INTO tbl_bid
-        (userId, vehicleId, yourOffer, maxBid, monsterBid, saleStatus, bidApprStatus, createdAt, updatedAt)
+        (userId, vehicleId, yourOffer, maxBid, MonsterBid, saleStatus, bidApprStatus, createdAt, updatedAt)
        VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [userId, vehicleId, yourOffer, maxBid, monsterBid, saleStatus, "ongoing"]
     );
@@ -224,38 +249,30 @@ export const startBidding = async (req, res) => {
     );
 
     const id = newBid[0].vehicleId;
-    console.log(id);
-
-    const [updatedBids] = await connection.query(
-      `SELECT b.*, u.name
-       FROM tbl_bid b
-       JOIN tbl_users u ON u.id = b.userId
-       WHERE b.vehicleId = ?
-       ORDER BY b.id DESC`,
-      [vehicleId]
-    );
+    console.log("Vehicle ID:", id);
 
     await connection.query(
       'UPDATE tbl_bid SET auctionStatus = "live" WHERE vehicleId = ?',
       [vehicleId]
     );
 
+    // 🔹 Emit live bid update
     console.log(
       "Emitting to room",
       `vehicle_${id}`,
       Array.from(await io.in(`vehicle_${id}`).allSockets())
     );
- 
+
     io.to(`vehicle_${id}`).emit("bidUpdate", {
       vehicleId: id,
-      latestBid: newBid[0]
+      latestBid: newBid[0],
     });
 
     await connection.commit();
 
     return res.status(200).json({
       success: true,
-      message: `${bidType} of $${yourOffer} placed successfully`,
+      message: `${bidType} of $${yourOffer} placed successfully.`,
       bid: newBid[0],
     });
   } catch (error) {
@@ -263,7 +280,7 @@ export const startBidding = async (req, res) => {
     console.error("Error in startBidding:", error);
     return res.status(500).json({
       success: false,
-      message: "Failed to process bid",
+      message: "Failed to process bid.",
       error: error.message,
     });
   } finally {
@@ -275,8 +292,7 @@ export const endBidding = async (id) => {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
- 
-    // 1. Check if the bid exists
+
     const [bidRows] = await connection.query(
       `SELECT * FROM tbl_bid WHERE id = ?`,
       [id]
@@ -285,64 +301,85 @@ export const endBidding = async (id) => {
       await connection.rollback();
       return { success: false, message: "Bid not found" };
     }
- 
+
     const vehicleID = bidRows[0].vehicleId;
-    console.log(vehicleID);
-    // 2. Mark all bids for this vehicle as completed + auction ended
-    await connection.query(
-      `UPDATE tbl_bid
-       SET bidApprStatus = 'completed', auctionStatus = 'end'
-       WHERE vehicleId = ?`,
-      [vehicleID]
-    );
- 
-    // 3. Get the winning bid (highest MonsterBid from customers)
+
     const [winnerRows] = await connection.query(
       `SELECT b.id, b.userId, b.vehicleId, b.MonsterBid, b.maxBid, u.role
        FROM tbl_bid b
        JOIN tbl_users u ON b.userId = u.id
        WHERE b.vehicleId = ?
          AND u.role = 'customer'
-       ORDER BY b.MonsterBid DESC
+         AND b.maxBid IS NOT NULL
+         AND b.yourOffer IS NOT NULL
+       ORDER BY b.maxBid DESC, b.createdAt DESC, b.id DESC
        LIMIT 1`,
       [vehicleID]
     );
- 
+
+    const [allBids] = await connection.query(
+      `SELECT b.id, b.userId, b.maxBid, b.yourOffer, b.createdAt, u.role, u.name
+       FROM tbl_bid b
+       JOIN tbl_users u ON b.userId = u.id
+       WHERE b.vehicleId = ?
+       ORDER BY b.maxBid DESC`,
+      [vehicleID]
+    );
+    console.log("ALL BIDS FOR VEHICLE:", allBids);
+
     if (winnerRows.length === 0) {
-      await connection.rollback();
-      return { success: false, message: "No customer bids found for this vehicle" };
+      await connection.query(
+        `UPDATE tbl_bid
+         SET bidApprStatus = 'completed', auctionStatus = 'end'
+         WHERE vehicleId = ?`,
+        [vehicleID]
+      );
+      await connection.commit();
+      return {
+        success: false,
+        message: "No customer bids found for this vehicle",
+      };
     }
- 
+
     const winner = winnerRows[0];
- 
-    // 4. Mark the winner
+    console.log("WINNER SELECTED:", {
+      bidId: winner.id,
+      userId: winner.userId,
+      maxBid: winner.maxBid,
+    });
+
+    await connection.query(
+      `UPDATE tbl_bid
+       SET bidApprStatus = 'completed', auctionStatus = 'end'
+       WHERE vehicleId = ?`,
+      [vehicleID]
+    );
+
     await connection.query(
       `UPDATE tbl_bid
        SET winStatus = 'Won', saleStatus = 'sold'
        WHERE id = ?`,
       [winner.id]
     );
- 
-    // 5. Mark all other customers as Lost
+
     await connection.query(
       `UPDATE tbl_bid b
        JOIN tbl_users u ON b.userId = u.id
        SET b.winStatus = 'Lost'
        WHERE b.vehicleId = ?
          AND b.id != ?
-         AND u.role = 'customer'`,
+         AND u.role = 'customer'
+         AND b.yourOffer IS NOT NULL`,
       [vehicleID, winner.id]
     );
- 
-    // 6. Mark vehicle as sold
+
     await connection.query(
       `UPDATE tbl_vehicles
        SET saleStatus = 'sold'
        WHERE id = ?`,
       [vehicleID]
     );
- 
-    // 7. Get winner details with user info
+
     const [finalWinner] = await connection.query(
       `SELECT b.*, u.name, u.email, u.contact, u.role
        FROM tbl_bid b
@@ -350,17 +387,27 @@ export const endBidding = async (id) => {
        WHERE b.id = ?`,
       [winner.id]
     );
- 
+
+    await pool.query(
+      `update tbl_vehicles set soldStatus = 'Sold' where id = ?`,
+      [vehicleID]
+    );
+
     await connection.commit();
     return { success: true, winner: finalWinner[0] };
   } catch (error) {
     await connection.rollback();
     console.error("Error ending bidding:", error);
-    return { success: false, message: "Internal server error", error: error.message };
+    return {
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    };
   } finally {
     connection.release();
   }
 };
+
 // export const endBidding = async (req, res) => {
 //   const connection = await pool.getConnection();
 //   try {
@@ -421,7 +468,7 @@ export const endBidding = async (id) => {
 //     const winnerId = result[0].userId;
 //     const bidId = result[0].id;
 
-//     console.log("bidId", bidId);  
+//     console.log("bidId", bidId);
 
 //     await connection.query(
 //       `
@@ -450,9 +497,9 @@ export const endBidding = async (id) => {
 //     );
 
 //     const [final] = await pool.query(
-//       `select b.*, u.name, u.email, u.contact, u.role 
-//         from tbl_bid b join 
-//         tbl_users u on 
+//       `select b.*, u.name, u.email, u.contact, u.role
+//         from tbl_bid b join
+//         tbl_users u on
 //         u.id = b.userId
 //         where vehicleId = 3 and  winStatus = 'Won'`,
 //       [vehicleID]
@@ -462,8 +509,7 @@ export const endBidding = async (id) => {
 //       `select * from tbl_bid where vehicleId = ? and winStatus = 'Won'`,
 //       [vehicleID]
 //     );
-  
-    
+
 //     await connection.query(
 //       `UPDATE tbl_bid SET auctionStatus = 'end', saleStatus = 'sold' WHERE vehicleId = ?`,
 //       [vehicleID]
@@ -528,20 +574,25 @@ export const totalVehicles = async (req, res) => {
 
 export const totalLiveAuctions = async (req, res) => {
   try {
-    const [query] = await pool.query(
-      `select count(*) as totalLiveAuctions from tbl_bid b
-        join tbl_users u on u.id = b.userId
-        join tbl_vehicles v on
-        b.vehicleId = v.id
-        WHERE
+    const [rows] = await pool.query(`
+      SELECT COUNT(*) AS totalLiveAuctions
+      FROM tbl_vehicles v
+      JOIN tbl_bid b ON v.id = b.vehicleId
+      JOIN tbl_users u ON u.id = b.userId
+      WHERE 
         b.auctionStatus = 'live'
         AND v.vehicleStatus = 'Y'
-        AND (u.role = 'seller' OR u.role = 'admin')`
-    );
-    res.status(200).json({ totalLiveAuctions: query[0].totalLiveAuctions });
+        AND (u.role = 'seller' OR u.role = 'admin')
+        AND b.startTime >= CURDATE()
+    `);
+
+    return res.status(200).json({
+      success: true,
+      totalLiveAuctions: rows[0].totalLiveAuctions,
+    });
   } catch (error) {
-    console.error("Error fetching total vehicles:", error);
-    res.status(500).json({
+    console.error("Error fetching total live auctions:", error);
+    return res.status(500).json({
       success: false,
       message: "Internal server error",
       error: error.message,
@@ -817,12 +868,22 @@ export const bidHistoryCount = async (req, res) => {
 
 export const totalBuyers = async (req, res) => {
   try {
-    const [query] = await pool.query(
-      `select count(*) as totalBuyers from tbl_users where status = 'Y' and role = 'customer'`
-    );
-    res.status(200).json({ totalBuyers: query[0].totalBuyers });
+    const [query] = await pool.query(`
+      SELECT
+        COUNT(*) AS totalBuyers,
+        SUM(CASE WHEN role = 'customer' THEN 1 ELSE 0 END) AS totalCustomers,
+        SUM(CASE WHEN role = 'seller' THEN 1 ELSE 0 END) AS totalSellers
+      FROM tbl_users
+      WHERE status = 'Y' AND role IN ('customer', 'seller');
+    `);
+
+    res.status(200).json({
+      totalBuyers: query[0].totalBuyers,
+      totalCustomers: query[0].totalCustomers,
+      totalSellers: query[0].totalSellers,
+    });
   } catch (error) {
-    console.error("Error fetching total vehicles:", error);
+    console.error("Error fetching total users:", error);
     res.status(500).json({
       success: false,
       message: "Internal server error",
@@ -914,7 +975,7 @@ export const bidStartEnds = async (req, res) => {
           console.error("Error in cron job:", err.message);
         }
       });
-      cronStarted = true; 
+      cronStarted = true;
     }
 
     return res.status(200).json({
@@ -928,23 +989,24 @@ export const bidStartEnds = async (req, res) => {
 };
 
 export const getUsers = async (req, res) => {
-  try{
-
+  try {
     // await pool.query(`SET FOREIGN_KEY_CHECKS = 0`);
     // const [rows] = await pool.query("select * FROM tbl_suggestions");
-    const [rows] = await pool.query("delete from tbl_users where email in ('ammaramjad53@gmail.com', 'owaisansarcodm@gmail.com', 'hamzaamin104@gmail.com', 'dmughal908@gmail.com', 'hamzaamintechnicmentors@gmail.com', 'owaisansar00x@gmail.com', 'owaisansarcodm@gmail.com')");
-    // const [rows] = await pool.query(`alter table tbl_series 
+    const [rows] = await pool.query(
+      "delete from tbl_users where email in ('ammaramjad53@gmail.com', 'owaisansarcodm@gmail.com', 'hamzaamin104@gmail.com', 'dmughal908@gmail.com', 'hamzaamintechnicmentors@gmail.com', 'owaisansar00x@gmail.com', 'owaisansarcodm@gmail.com')"
+    );
+    // const [rows] = await pool.query(`alter table tbl_series
     // add column brandId int not  null after modelId`);
     // await pool.query(`SET FOREIGN_KEY_CHECKS = 1`);
-    
-//     const [rows] = await pool.query(`CREATE TABLE tbl_suggestions (
-//     id INT AUTO_INCREMENT PRIMARY KEY,
-//     name VARCHAR(100) NULL,
-//     email VARCHAR(150) NULL,
-//     contactNumber VARCHAR(20) NULL,
-//     suggestion TEXT NULL,
-//     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-// )`);
+
+    //     const [rows] = await pool.query(`CREATE TABLE tbl_suggestions (
+    //     id INT AUTO_INCREMENT PRIMARY KEY,
+    //     name VARCHAR(100) NULL,
+    //     email VARCHAR(150) NULL,
+    //     contactNumber VARCHAR(20) NULL,
+    //     suggestion TEXT NULL,
+    //     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    // )`);
 
     // const [rows] = await pool.query(`alter table tbl_series add column modelId int not null after brandId`);
 
@@ -957,9 +1019,9 @@ export const getUsers = async (req, res) => {
     // const [rows] = await pool.query(`ALTER TABLE tbl_users MODIFY name VARCHAR(255) NULL`);
     // const [rows] = await pool.query(`alter  table tbl_users add column emailVerifStatus enum ('active', 'Non-Active') default 'Non-Active'`);
     res.status(200).send(rows);
-  }catch(error){
-    res.status(500).send({message: "Internal Server Error!"});
-    console.error({error: error.message});
+  } catch (error) {
+    res.status(500).send({ message: "Internal Server Error!" });
+    console.error({ error: error.message });
   }
 };
 
@@ -971,9 +1033,8 @@ export const truncateData = async (req, res) => {
     // await pool.query(`TRUNCATE TABLE tbl_users`);
     await pool.query(`TRUNCATE TABLE tbl_calender`);
 
-    
     // await pool.query(`delete from tbl_users where id = 4`);
-    
+
     await pool.query(`SET FOREIGN_KEY_CHECKS = 1`);
 
     res.status(200).send({
@@ -984,7 +1045,7 @@ export const truncateData = async (req, res) => {
     console.error("Truncate Error:", error.message);
     res.status(500).send({
       message: "Internal Server Error while truncating!",
-      error: error.message
+      error: error.message,
     });
   }
 };

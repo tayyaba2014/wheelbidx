@@ -97,13 +97,12 @@ export const checkVehicles = async (req, res) => {
   }
 };
 
-export const addVehicle = async (req, res) => {
+export const addVehicleForAdmin = async (req, res) => {
   const uploadedLocalFilePaths = [];
 
   try {
     const {
       userId,
-      vin = " ",
       year,
       make,
       model,
@@ -125,38 +124,67 @@ export const addVehicle = async (req, res) => {
       certifyStatus,
     } = req.body;
 
-    // Normalize and validate VIN
-    // const normalizedVin = vin?.trim().toUpperCase();
-    // if (!normalizedVin || !/^[A-HJ-NPR-Z0-9]{17}$/i.test(normalizedVin)) {
-    //   return res.status(400).json({
-    //     success: false,
-    //     message: 'Invalid or missing VIN (must be 17 alphanumeric characters)',
-    //   });
-    // }
+    // ✅ Step 1: Validate required fields
+    const fields = [
+      "userId",
+      "year",
+      "make",
+      "model",
+      "series",
+      "bodyStyle",
+      "transmission",
+      "driveType",
+      "fuelType",
+      "color",
+      "mileage",
+      "vehicleCondition",
+      "locationId",
+      "buyNowPrice",
+      "certifyStatus",
+    ];
 
-    // Validate required fields
-    // const requiredFields = ['year', 'make', 'model', 'vehicleCondition', 'locationId', 'userId'];
-    // const missingFields = requiredFields.filter(field => !req.body[field]);
-    // if (missingFields.length > 0) {
-    //   return res.status(400).json({
-    //     success: false,
-    //     message: `Missing required fields: ${missingFields.join(', ')}`
-    //   });
-    // }
+    const missingFields = fields.filter((field) => !req.body[field]);
+    if (missingFields.length > 0) {
+      return res.status(400).send({
+        message: "Missing required fields",
+        missingFields: missingFields.join(", "),
+      });
+    }
 
-    // Check for existing vehicle
-    // const [existingVehicle] = await pool.query(
-    //   'SELECT id FROM tbl_vehicles WHERE vin = ?',
-    //   [normalizedVin]
-    // );
-    // if (existingVehicle.length > 0) {
-    //   return res.status(409).json({
-    //     success: false,
-    //     message: 'Vehicle with this VIN already exists'
-    //   });
-    // }
+    // ✅ Step 2: Generate a unique auto-increment lot_number
+    let lot_number;
+    let isUnique = false;
 
-    // --- Cloudinary Image Uploads (NEW LOGIC) ---
+    while (!isUnique) {
+      // Get latest lot_number from database
+      const [rows] = await pool.query(
+        "SELECT lot_number FROM tbl_vehicles ORDER BY id DESC LIMIT 1"
+      );
+
+      // Determine the next number
+      let nextNumber = 1;
+      if (rows.length > 0 && rows[0].lot_number) {
+        const lastLot = parseInt(rows[0].lot_number, 10);
+        nextNumber = isNaN(lastLot) ? 1 : lastLot + 1;
+      }
+
+      // Format as "0001", "0002", etc.
+      lot_number = String(nextNumber).padStart(4, "0");
+
+      // Check for duplicates (safety)
+      const [exists] = await pool.query(
+        "SELECT id FROM tbl_vehicles WHERE lot_number = ?",
+        [lot_number]
+      );
+
+      if (exists.length === 0) {
+        isUnique = true;
+      } else {
+        nextNumber++;
+      }
+    }
+
+    // ✅ Step 3: Handle Cloudinary image uploads
     const imagePublicIds = [];
     const filesToUpload =
       req.files && req.files.image
@@ -196,20 +224,204 @@ export const addVehicle = async (req, res) => {
         );
       }
     }
+
+    // ✅ Step 4: Insert new vehicle
+    const [insertResult] = await pool.query(
+      `INSERT INTO tbl_vehicles (
+        approval, userId, lot_number, year, make, model, series, bodyStyle, engine,
+        transmission, driveType, fuelType, color, mileage,
+        vehicleCondition, keysAvailable, locationId,
+        saleStatus, auctionDate, currentBid, buyNowPrice,
+        image, certifyStatus
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "Y",
+        userId,
+        lot_number,
+        parseInt(year) || null,
+        make,
+        model,
+        series,
+        bodyStyle,
+        engine,
+        transmission,
+        driveType,
+        fuelType,
+        color,
+        parseInt(mileage) || null,
+        vehicleCondition,
+        keysAvailable === "true" || keysAvailable === true,
+        locationId,
+        saleStatus,
+        auctionDate || null,
+        parseFloat(currentBid) || 0.0,
+        parseFloat(buyNowPrice) || null,
+        JSON.stringify(imagePublicIds),
+        certifyStatus,
+      ]
+    );
+
+    console.log("✅ Auto-generated lot_number:", lot_number);
+
+    // ✅ Step 5: Return new vehicle
+    const [newVehicle] = await pool.query(
+      "SELECT * FROM tbl_vehicles WHERE id = ?",
+      [insertResult.insertId]
+    );
+
+    const newVehicleWithImages = { ...newVehicle[0] };
+    newVehicleWithImages.images = imagePublicIds.map((publicId) =>
+      getPhotoUrl(publicId, { width: 400, crop: "limit", quality: "auto" })
+    );
+    delete newVehicleWithImages.image;
+
+    return res.status(201).json({
+      success: true,
+      message: "Vehicle added successfully",
+      ...newVehicleWithImages,
+    });
+  } catch (error) {
+    console.error("Error adding vehicle:", error);
+
+    if (uploadedLocalFilePaths.length > 0) {
+      console.log(
+        "Cleaning up local temporary files due to error:",
+        uploadedLocalFilePaths
+      );
+      await Promise.all(
+        uploadedLocalFilePaths.map(async (path) => {
+          try {
+            await fs.access(path);
+            await fs.unlink(path);
+          } catch (cleanupError) {
+            console.error(
+              `Failed to clean up local file ${path}:`,
+              cleanupError.message
+            );
+          }
+        })
+      );
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+
+export const addVehicle = async (req, res) => {
+  const uploadedLocalFilePaths = [];
+
+  try {
+    const {
+      userId,
+      year,
+      make,
+      model,
+      series,
+      bodyStyle,
+      engine,
+      transmission,
+      driveType,
+      fuelType,
+      color,
+      mileage,
+      vehicleCondition,
+      keysAvailable,
+      locationId,
+      saleStatus = "live",
+      auctionDate,
+      currentBid = 0.0,
+      buyNowPrice,
+      certifyStatus,
+    } = req.body;
+
+    const forSearch = `${make} ${model} ${series}`;
+
+    // ✅ Generate lot_number automatically (simple 4-digit random)
+    const lot_number = String(Math.floor(Math.random() * 9000) + 1000); // 1000–9999
+
+    const fields = [
+      "userId",
+      "year",
+      "make",
+      "model",
+      "series",
+      "bodyStyle",
+      "transmission",
+      "driveType",
+      "fuelType",
+      "color",
+      "mileage",
+      "vehicleCondition",
+      "locationId",
+      "buyNowPrice",
+      "certifyStatus",
+    ];
+
+    const missingFields = fields.filter((field) => !req.body[field]);
+
+    if (missingFields.length > 0) {
+      return res.status(400).send({
+        message: "Missing required fields",
+        missingFields: missingFields.join(", "),
+      });
+    }
+
+    // --- Cloudinary Image Uploads ---
+    const imagePublicIds = [];
+    const filesToUpload =
+      req.files && req.files.image
+        ? Array.isArray(req.files.image)
+          ? req.files.image
+          : [req.files.image]
+        : [];
+
+    const imagesToProcess = filesToUpload.slice(0, 25);
+
+    for (const file of imagesToProcess) {
+      try {
+        uploadedLocalFilePaths.push(file.path);
+
+        const { public_id } = await uploadPhoto(file.path, "vehicle_photos");
+        imagePublicIds.push(public_id);
+
+        try {
+          await fs.access(file.path);
+          await fs.unlink(file.path);
+          const index = uploadedLocalFilePaths.indexOf(file.path);
+          if (index > -1) uploadedLocalFilePaths.splice(index, 1);
+        } catch (accessOrUnlinkError) {
+          console.warn(
+            `Could not delete local temp file ${file.path}:`,
+            accessOrUnlinkError.message
+          );
+        }
+      } catch (uploadError) {
+        console.error(
+          `Failed to upload image "${
+            file.originalFilename || file.name
+          }" to Cloudinary:`,
+          uploadError.message
+        );
+      }
+    }
     // --- END Cloudinary Image Uploads ---
 
     // Insert vehicle
     const [insertResult] = await pool.query(
       `INSERT INTO tbl_vehicles (
-        userId, vin, year, make, model, series, bodyStyle, engine,
+        userId, lot_number, year, make, model, series, bodyStyle, engine,
         transmission, driveType, fuelType, color, mileage,
         vehicleCondition, keysAvailable, locationId,
         saleStatus, auctionDate, currentBid, buyNowPrice,
-        image, certifyStatus
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        image, certifyStatus, search
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         userId,
-        vin,
+        lot_number,
         parseInt(year) || null,
         make,
         model,
@@ -228,12 +440,13 @@ export const addVehicle = async (req, res) => {
         auctionDate || null,
         parseFloat(currentBid) || 0.0,
         parseFloat(buyNowPrice) || null,
-        JSON.stringify(imagePublicIds), // Store Cloudinary public_ids as JSON string
+        JSON.stringify(imagePublicIds),
         certifyStatus,
+        forSearch,
       ]
     );
 
-    console.log("this is fucking salestatus", saleStatus);
+    console.log("✅ Auto-generated lot_number:", lot_number);
 
     // Return inserted vehicle
     const [newVehicle] = await pool.query(
@@ -241,17 +454,11 @@ export const addVehicle = async (req, res) => {
       [insertResult.insertId]
     );
 
-    // const realPrice = formatingPrice(buyNowPrice);
-    // const priceObj = { buyNowPrice: realPrice };
-    // console.log("Formatted Buy Now Price:", priceObj);
-
-    // IMPORTANT: For the response, we should also provide the Cloudinary URLs
     const newVehicleWithImages = { ...newVehicle[0] };
-    newVehicleWithImages.images = imagePublicIds.map(
-      (publicId) =>
-        getPhotoUrl(publicId, { width: 400, crop: "limit", quality: "auto" }) // Corrected call here!
+    newVehicleWithImages.images = imagePublicIds.map((publicId) =>
+      getPhotoUrl(publicId, { width: 400, crop: "limit", quality: "auto" })
     );
-    delete newVehicleWithImages.image; // Remove the internal public_ids field from the response
+    delete newVehicleWithImages.image;
 
     return res.status(201).json({
       success: true,
@@ -261,20 +468,13 @@ export const addVehicle = async (req, res) => {
   } catch (error) {
     console.error("Error adding vehicle:", error);
 
-    // Clean up any temporary files that were uploaded locally but failed to transfer to Cloudinary
     if (uploadedLocalFilePaths.length > 0) {
-      console.log(
-        "Cleaning up local temporary files due to error:",
-        uploadedLocalFilePaths
-      );
       await Promise.all(
         uploadedLocalFilePaths.map(async (path) => {
           try {
-            await fs.access(path); // Check if file exists before trying to delete
+            await fs.access(path);
             await fs.unlink(path);
           } catch (cleanupError) {
-            // This catch block handles cases where the file might have been deleted by another process
-            // or never existed (e.g., if the initial file.path was bad)
             console.error(
               `Failed to clean up local file ${path}:`,
               cleanupError.message
@@ -300,7 +500,7 @@ export const getVehicles = async (req, res) => {
       auctionDateStart,
       auctionDateEnd,
       vehicleCondition,
-      locationId,  
+      locationId,
       make,
       model,
       series,
@@ -316,14 +516,14 @@ export const getVehicles = async (req, res) => {
       search,
       sortType,
     } = req.query;
- 
+
     const defaultLimit = 100000000000;
     const defaultPage = 1;
     const entry = parseInt(req.query.entry) || defaultLimit;
     const page = parseInt(req.query.page) || defaultPage;
     const limit = Math.max(1, entry);
     const offset = (Math.max(1, page) - 1) * limit;
- 
+
     // ✅ Include tbl_cities join
     let query = `
       SELECT v.*, c.cityName
@@ -331,17 +531,17 @@ export const getVehicles = async (req, res) => {
       LEFT JOIN tbl_cities c ON v.locationId = c.id
       WHERE v.vehicleStatus = 'Y'
     `;
- 
+
     let countQuery = `
       SELECT COUNT(*) as total
       FROM tbl_vehicles v
       LEFT JOIN tbl_cities c ON v.locationId = c.id
       WHERE v.vehicleStatus = 'Y'
     `;
- 
+
     const params = [];
     const countParams = [];
- 
+
     // Auction Date filters
     if (auctionDateStart && auctionDateEnd) {
       query += ` AND v.auctionDate BETWEEN ? AND ?`;
@@ -354,7 +554,7 @@ export const getVehicles = async (req, res) => {
       params.push(auctionDate);
       countParams.push(auctionDate);
     }
- 
+
     // Filter by locationId (numeric only, now matched directly with JOIN)
     if (locationId) {
       query += ` AND v.locationId = ?`;
@@ -362,7 +562,7 @@ export const getVehicles = async (req, res) => {
       params.push(locationId);
       countParams.push(locationId);
     }
- 
+
     if (maxPrice && minPrice) {
       query += ` AND v.buyNowPrice BETWEEN ? AND ?`;
       countQuery += ` AND v.buyNowPrice BETWEEN ? AND ?`;
@@ -374,14 +574,14 @@ export const getVehicles = async (req, res) => {
       params.push(buyNowPrice);
       countParams.push(buyNowPrice);
     }
- 
+
     if (year) {
       query += ` AND v.year = ?`;
       countQuery += ` AND v.year = ?`;
       params.push(year);
       countParams.push(year);
     }
- 
+
     if (search) {
       query += ` AND (
         v.make LIKE ? OR
@@ -403,10 +603,10 @@ export const getVehicles = async (req, res) => {
         countParams.push(searchTerm);
       }
     }
- 
+
     let makeName = make;
     let modelName = model;
- 
+
     if (make && !isNaN(make)) {
       const [rows] = await pool.query(
         `SELECT brandName FROM tbl_brands WHERE id = ?`,
@@ -416,7 +616,7 @@ export const getVehicles = async (req, res) => {
         makeName = rows[0].brandName;
       }
     }
- 
+
     if (model && !isNaN(model)) {
       const [rows] = await pool.query(
         `SELECT modelName FROM tbl_model WHERE id = ?`,
@@ -426,7 +626,7 @@ export const getVehicles = async (req, res) => {
         modelName = rows[0].modelName;
       }
     }
- 
+
     const filters = {
       make: makeName,
       model: modelName,
@@ -438,7 +638,7 @@ export const getVehicles = async (req, res) => {
       fuelType,
       color,
     };
- 
+
     Object.entries(filters).forEach(([key, value]) => {
       if (value) {
         query += ` AND v.${key} = ?`;
@@ -447,14 +647,14 @@ export const getVehicles = async (req, res) => {
         countParams.push(value);
       }
     });
- 
+
     if (vehicleCondition && vehicleCondition !== "all") {
       query += ` AND v.vehicleCondition = ?`;
       countQuery += ` AND v.vehicleCondition = ?`;
       params.push(vehicleCondition);
       countParams.push(vehicleCondition);
     }
- 
+
     // Sorting
     if (sortType) {
       if (sortType === "low") {
@@ -469,18 +669,18 @@ export const getVehicles = async (req, res) => {
     } else {
       query += ` ORDER BY v.id ASC`;
     }
- 
+
     query += ` LIMIT ? OFFSET ?`;
     params.push(limit, offset);
- 
+
     const [vehicles] = await pool.query(query, params);
     const [totalVehicles] = await pool.query(countQuery, countParams);
     const total = totalVehicles[0].total;
- 
+
     const vehiclesWithImages = await Promise.all(
       vehicles.map(async (vehicle) => {
         const processedVehicle = { ...vehicle };
- 
+
         try {
           processedVehicle.buyNowPrice = formatingPrice(vehicle.buyNowPrice);
         } catch {
@@ -491,7 +691,7 @@ export const getVehicles = async (req, res) => {
         } catch {
           processedVehicle.currentBid = null;
         }
- 
+
         let imageUrls = [];
         if (processedVehicle.image) {
           try {
@@ -512,16 +712,15 @@ export const getVehicles = async (req, res) => {
             imageUrls = [];
           }
         }
- 
+
         processedVehicle.images = imageUrls;
         delete processedVehicle.image;
- 
+
         return processedVehicle;
       })
     );
- 
+
     res.status(200).json(vehiclesWithImages);
- 
   } catch (error) {
     console.error("Failed to fetch Vehicles:", error);
     return res.status(500).json({
@@ -539,7 +738,6 @@ export const updateVehicle = async (req, res) => {
 
     const {
       userId,
-      // vin disabled
       year,
       make,
       model,
@@ -560,6 +758,37 @@ export const updateVehicle = async (req, res) => {
       buyNowPrice,
       certifyStatus,
     } = req.body;
+
+    const fields = [
+      "userId",
+      "year",
+      "make",
+      "model",
+      "series",
+      "bodyStyle",
+      "transmission",
+      "driveType",
+      "fuelType",
+      "color",
+      "mileage",
+      "vehicleCondition",
+      "locationId",
+      "buyNowPrice",
+      "certifyStatus",
+    ];
+
+    const missingFields = fields.filter((field) => !req.body[field]);
+
+    if (missingFields.length > 0) {
+      return res.status(400).send({
+        message: "Missing required fields",
+        missingFields: missingFields.join(", "),
+      });
+    }
+
+    // if(buyNowPrice === null || buyNowPrice < 100){
+    //   return res.status(404).send({message : "Please Enter a valid price"});
+    // }
 
     let vcondition = vehicleCondition ? vehicleCondition : "";
     const normalizedAuctionDate = auctionDate || null;
@@ -765,8 +994,8 @@ export const getVehicleByMake = async (req, res) => {
     const limit = Math.max(1, entry);
     const offset = (Math.max(1, page) - 1) * limit;
 
-    let query = `SELECT * FROM tbl_vehicles WHERE vehicleStatus = 'Y'`;
-    let countQuery = `SELECT COUNT(*) as total FROM tbl_vehicles WHERE vehicleStatus = 'Y'`;
+    let query = `SELECT * FROM tbl_vehicles WHERE vehicleStatus = 'Y' and approval = 'Y'`;
+    let countQuery = `SELECT COUNT(*) as total FROM tbl_vehicles WHERE vehicleStatus = 'Y' and approval = 'Y'`;
 
     const params = [];
     const countParams = [];
@@ -890,7 +1119,7 @@ export const getVehiclesById = async (req, res) => {
 
     let query = `select id as newVehicleId,
     userId,
-    vin,
+    lot_number,
     year,
     make,
     model,
@@ -1021,8 +1250,9 @@ export const getVehiclesById = async (req, res) => {
 export const getVehiclesByUser = async (req, res) => {
   try {
     const id = req.params.id;
- 
+
     const {
+      approval,
       year,
       auctionDate,
       auctionDateStart,
@@ -1040,36 +1270,29 @@ export const getVehiclesByUser = async (req, res) => {
       color,
       search,
     } = req.query;
- 
-    const defaultLimit = 100000000;
-    const defaultPage = 1;
-    const entry = parseInt(req.query.entry) || defaultLimit;
-    const page = parseInt(req.query.page) || defaultPage;
-    const limit = Math.max(1, entry);
-    const offset = (Math.max(1, page) - 1) * limit;
- 
+
     let query = `
       SELECT v.id AS newVehicleId,
-        v.userId, v.vin, v.year, v.make, v.model, v.series, v.bodyStyle,
+        v.userId, v.lot_number, v.year, v.make, v.model, v.series, v.bodyStyle,
         v.engine, v.transmission, v.driveType, v.fuelType, v.color, v.mileage,
         v.vehicleCondition, v.keysAvailable, v.locationId, c.cityName,
         v.saleStatus, v.auctionDate, v.currentBid, v.buyNowPrice,
-        v.vehicleStatus, v.image, v.certifyStatus
+        v.vehicleStatus, v.image, v.certifyStatus, v.approval
       FROM tbl_vehicles v
       LEFT JOIN tbl_cities c ON v.locationId = c.id
       WHERE 1=1 AND v.vehicleStatus = 'Y'
     `;
- 
+
     let countQuery = `
       SELECT COUNT(*) as total
       FROM tbl_vehicles v
       LEFT JOIN tbl_cities c ON v.locationId = c.id
       WHERE 1=1 AND v.vehicleStatus = 'Y'
     `;
- 
+
     const params = [];
     const countParams = [];
- 
+
     // Date filters
     if (auctionDateStart && auctionDateEnd) {
       query += ` AND v.auctionDate BETWEEN ? AND ?`;
@@ -1082,7 +1305,7 @@ export const getVehiclesByUser = async (req, res) => {
       params.push(auctionDate);
       countParams.push(auctionDate);
     }
- 
+
     // Year filters
     if (yearMin && yearMax) {
       query += ` AND v.year BETWEEN ? AND ?`;
@@ -1095,11 +1318,17 @@ export const getVehiclesByUser = async (req, res) => {
       params.push(year);
       countParams.push(year);
     }
- 
+
     // Search filter
     if (search) {
       const term = `%${search}%`;
-      const fields = ["v.make", "v.model", "v.series", "v.bodyStyle", "v.color"];
+      const fields = [
+        "v.make",
+        "v.model",
+        "v.series",
+        "v.bodyStyle",
+        "v.color",
+      ];
       const searchClause = fields.map((f) => `${f} LIKE ?`).join(" OR ");
       query += ` AND (${searchClause})`;
       countQuery += ` AND (${searchClause})`;
@@ -1107,7 +1336,7 @@ export const getVehiclesByUser = async (req, res) => {
       params.push(...repeated);
       countParams.push(...repeated);
     }
- 
+
     // Dynamic filters
     const filters = {
       make,
@@ -1120,7 +1349,7 @@ export const getVehiclesByUser = async (req, res) => {
       fuelType,
       color,
     };
- 
+
     for (const [key, value] of Object.entries(filters)) {
       if (value) {
         query += ` AND v.${key} = ?`;
@@ -1129,15 +1358,15 @@ export const getVehiclesByUser = async (req, res) => {
         countParams.push(value);
       }
     }
- 
-    // Final user + pagination clauses
-    query += ` AND v.userId = ? ORDER BY v.auctionDate DESC LIMIT ? OFFSET ?`;
-    params.push(id, limit, offset);
- 
+
+    // Final user filter (no pagination)
+    query += ` AND v.userId = ? ORDER BY v.auctionDate DESC`;
+    params.push(id);
+
     const [vehicles] = await pool.query(query, params);
     const [countResult] = await pool.query(countQuery, countParams);
     const total = countResult[0]?.total || 0;
- 
+
     const enrichedVehicles = await Promise.all(
       vehicles.map(async (vehicle) => {
         // Convert Cloudinary public_ids to URLs
@@ -1161,13 +1390,13 @@ export const getVehiclesByUser = async (req, res) => {
             err.message
           );
         }
- 
+
         // Fetch specifications
         const [specs] = await pool.query(
           `SELECT * FROM tbl_vehicle_specifications WHERE vehicleId = ?`,
           [vehicle.newVehicleId]
         );
- 
+
         return {
           ...vehicle,
           buyNowPrice: formatingPrice(vehicle.buyNowPrice),
@@ -1176,7 +1405,7 @@ export const getVehiclesByUser = async (req, res) => {
         };
       })
     );
- 
+
     res.status(200).json(enrichedVehicles);
   } catch (error) {
     console.error("Failed to fetch vehicles by user ID:", error);
@@ -1201,36 +1430,34 @@ export const todayAuction = async (req, res) => {
 
     let values = [];
 
-    //  Only add search if it's non-empty
     if (search && search.trim() !== "") {
       const likeValue = `%${search.trim()}%`;
 
       whereClauses.push(`
         (
           v.make LIKE ? OR
-          v.locationId LIKE ? OR
+          c.cityName LIKE ? OR
           v.model LIKE ? OR
           v.series LIKE ? OR
           v.bodyStyle LIKE ? OR
           v.color LIKE ? OR
-          v.vin LIKE ? OR
+          v.lot_number LIKE ? OR
           b.id LIKE ?
         )
       `);
 
       values.push(
         likeValue, // make
-        likeValue, // locationId
+        likeValue, // cityName (instead of locationId)
         likeValue, // model
         likeValue, // series
         likeValue, // bodyStyle
         likeValue, // color
-        likeValue, // vin
+        likeValue, // lot_number
         likeValue // b.id
       );
     }
 
-    //  Add auction date filter if provided
     if (auctionDate && auctionDate.trim() !== "") {
       whereClauses.push(`DATE(v.auctionDate) = ?`);
       values.push(auctionDate.trim());
@@ -1258,9 +1485,9 @@ export const todayAuction = async (req, res) => {
           b.startTime,
           b.endTime,
           b.auctionStatus,
- 
+
           v.id AS vehicleId,
-          v.vin,
+          v.lot_number,
           v.year,
           v.make,
           v.model,
@@ -1275,13 +1502,14 @@ export const todayAuction = async (req, res) => {
           v.vehicleCondition,
           v.keysAvailable,
           v.locationId,
+          c.cityName as locationId,
           v.auctionDate,
           v.currentBid,
           v.buyNowPrice,
           v.vehicleStatus,
           v.image,
           v.certifyStatus,
- 
+
           u.id AS userId,
           u.name,
           u.contact,
@@ -1291,10 +1519,11 @@ export const todayAuction = async (req, res) => {
           u.email,
           u.date,
           u.role
- 
+
         FROM tbl_vehicles v
         JOIN tbl_bid b ON v.id = b.vehicleId
         JOIN tbl_users u ON u.id = b.userId
+        LEFT JOIN tbl_cities c ON v.locationId = c.id
         WHERE ${whereClauses.join(" AND ")}
       `,
       values
@@ -1339,6 +1568,7 @@ export const todayAuction = async (req, res) => {
         maxBid: formatPriceField("maxBid"),
         MonsterBid: formatPriceField("MonsterBid"),
         images: cloudinaryImages,
+        cityName: row.cityName || "Unknown",
       };
     });
 
@@ -1857,5 +2087,1027 @@ export const getVehicleFinder = async (req, res) => {
       error: "Internal server error",
       message: error.message,
     });
+  }
+};
+
+// export const getApprovedVehicles = async (req, res) => {
+//   try {
+//     const {
+//       year,
+//       auctionDate,
+//       auctionDateStart,
+//       auctionDateEnd,
+//       vehicleCondition,
+//       locationId,
+//       make,
+//       model,
+//       series,
+//       bodyStyle,
+//       engine,
+//       transmission,
+//       driveType,
+//       fuelType,
+//       buyNowPrice,
+//       maxPrice,
+//       minPrice,
+//       color,
+//       search,
+//       sortType,
+//     } = req.query;
+
+//     const defaultLimit = 100000000000;
+//     const defaultPage = 1;
+//     const entry = parseInt(req.query.entry) || defaultLimit;
+//     const page = parseInt(req.query.page) || defaultPage;
+//     const limit = Math.max(1, entry);
+//     const offset = (Math.max(1, page) - 1) * limit;
+
+//     let query = `
+//       SELECT v.*, c.cityName
+//       FROM tbl_vehicles v
+//       LEFT JOIN tbl_cities c ON v.locationId = c.id
+//       WHERE v.vehicleStatus = 'Y'
+//       AND v.approval = 'Y' and soldStatus = 'Unsold'
+//     `;
+//     let countQuery = `
+//       SELECT COUNT(*) as total
+//       FROM tbl_vehicles v
+//       LEFT JOIN tbl_cities c ON v.locationId = c.id
+//       WHERE v.vehicleStatus = 'Y'
+//       AND v.approval = 'Y' and soldStatus = 'Unsold'
+//     `;
+
+//     const params = [];
+//     const countParams = [];
+
+//     // Auction Date filters
+//     if (auctionDateStart && auctionDateEnd) {
+//       query += ` AND v.auctionDate BETWEEN ? AND ?`;
+//       countQuery += ` AND v.auctionDate BETWEEN ? AND ?`;
+//       params.push(auctionDateStart, auctionDateEnd);
+//       countParams.push(auctionDateStart, auctionDateEnd);
+//     } else if (auctionDate) {
+//       query += ` AND v.auctionDate = ?`;
+//       countQuery += ` AND v.auctionDate = ?`;
+//       params.push(auctionDate);
+//       countParams.push(auctionDate);
+//     }
+
+//     // Filter by locationId (numeric only, now matched directly with JOIN)
+//     if (locationId) {
+//       query += ` AND v.locationId = ?`;
+//       countQuery += ` AND v.locationId = ?`;
+//       params.push(locationId);
+//       countParams.push(locationId);
+//     }
+
+//     if (maxPrice && minPrice) {
+//       query += ` AND v.buyNowPrice BETWEEN ? AND ?`;
+//       countQuery += ` AND v.buyNowPrice BETWEEN ? AND ?`;
+//       params.push(minPrice, maxPrice);
+//       countParams.push(minPrice, maxPrice);
+//     } else if (buyNowPrice) {
+//       query += ` AND v.buyNowPrice <= ?`;
+//       countQuery += ` AND v.buyNowPrice <= ?`;
+//       params.push(buyNowPrice);
+//       countParams.push(buyNowPrice);
+//     }
+
+//     if (year) {
+//       query += ` AND v.year = ?`;
+//       countQuery += ` AND v.year = ?`;
+//       params.push(year);
+//       countParams.push(year);
+//     }
+
+//     if (search) {
+//       query += ` AND (
+//       LOWER(v.make) LIKE LOWER(?) OR
+//       LOWER(v.model) LIKE LOWER(?) OR
+//       LOWER(v.series) LIKE LOWER(?) OR
+//       LOWER(v.bodyStyle) LIKE LOWER(?) OR
+//       LOWER(v.color) LIKE LOWER(?) OR
+//       LOWER(v.search) LIKE LOWER(?)
+//     )`;
+
+//       countQuery += ` AND (
+//       LOWER(v.make) LIKE LOWER(?) OR
+//       LOWER(v.model) LIKE LOWER(?) OR
+//       LOWER(v.series) LIKE LOWER(?) OR
+//       LOWER(v.bodyStyle) LIKE LOWER(?) OR
+//       LOWER(v.color) LIKE LOWER(?) OR
+//       LOWER(v.search) LIKE LOWER(?)
+//     )`;
+
+//       const searchTerm = `%${search}%`.toLowerCase();
+//       for (let i = 0; i < 6; i++) {
+//         params.push(searchTerm);
+//         countParams.push(searchTerm);
+//       }
+//     }
+
+//     let makeName = make;
+//     let modelName = model;
+
+//     if (make && !isNaN(make)) {
+//       const [rows] = await pool.query(
+//         `SELECT brandName FROM tbl_brands WHERE id = ?`,
+//         [make]
+//       );
+//       if (rows.length > 0) {
+//         makeName = rows[0].brandName;
+//       }
+//     }
+
+//     if (model && !isNaN(model)) {
+//       const [rows] = await pool.query(
+//         `SELECT modelName FROM tbl_model WHERE id = ?`,
+//         [model]
+//       );
+//       if (rows.length > 0) {
+//         modelName = rows[0].modelName;
+//       }
+//     }
+
+//     const filters = {
+//       make: makeName,
+//       model: modelName,
+//       series,
+//       bodyStyle,
+//       engine,
+//       transmission,
+//       driveType,
+//       fuelType,
+//       color,
+//     };
+
+//     Object.entries(filters).forEach(([key, value]) => {
+//       if (value) {
+//         query += ` AND v.${key} = ?`;
+//         countQuery += ` AND v.${key} = ?`;
+//         params.push(value);
+//         countParams.push(value);
+//       }
+//     });
+
+//     if (vehicleCondition && vehicleCondition !== "all") {
+//       query += ` AND v.vehicleCondition = ?`;
+//       countQuery += ` AND v.vehicleCondition = ?`;
+//       params.push(vehicleCondition);
+//       countParams.push(vehicleCondition);
+//     }
+
+//     // Sorting
+//     if (sortType) {
+//       if (sortType === "low") {
+//         query += ` ORDER BY v.buyNowPrice ASC`;
+//       } else if (sortType === "high") {
+//         query += ` ORDER BY v.buyNowPrice DESC`;
+//       } else if (sortType === "new") {
+//         query += ` ORDER BY v.auctionDate DESC`;
+//       } else {
+//         query += ` ORDER BY v.auctionDate DESC`;
+//       }
+//     } else {
+//       query += ` ORDER BY v.id ASC`;
+//     }
+
+//     query += ` LIMIT ? OFFSET ?`;
+//     params.push(limit, offset);
+
+//     const [vehicles] = await pool.query(query, params);
+//     const [totalVehicles] = await pool.query(countQuery, countParams);
+//     const total = totalVehicles[0].total;
+
+//     const vehiclesWithImages = await Promise.all(
+//       vehicles.map(async (vehicle) => {
+//         const processedVehicle = { ...vehicle };
+
+//         try {
+//           processedVehicle.buyNowPrice = formatingPrice(vehicle.buyNowPrice);
+//         } catch {
+//           processedVehicle.buyNowPrice = null;
+//         }
+//         try {
+//           processedVehicle.currentBid = formatingPrice(vehicle.currentBid);
+//         } catch {
+//           processedVehicle.currentBid = null;
+//         }
+
+//         let imageUrls = [];
+//         if (processedVehicle.image) {
+//           try {
+//             const publicIds = JSON.parse(processedVehicle.image);
+//             if (Array.isArray(publicIds)) {
+//               imageUrls = publicIds
+//                 .map((publicId) =>
+//                   getPhotoUrl(publicId, {
+//                     width: 800,
+//                     crop: "limit",
+//                     quality: "auto",
+//                     fetch_format: "auto",
+//                   })
+//                 )
+//                 .filter(Boolean);
+//             }
+//           } catch {
+//             imageUrls = [];
+//           }
+//         }
+
+//         processedVehicle.images = imageUrls;
+//         delete processedVehicle.image;
+
+//         return processedVehicle;
+//       })
+//     );
+
+//     res.status(200).json(vehiclesWithImages);
+//   } catch (error) {
+//     console.error("Failed to fetch Vehicles:", error);
+//     return res.status(500).json({
+//       success: false,
+//       error: "Internal server error",
+//       message: error.message,
+//     });
+//   }
+// };
+
+export const getApprovedVehicles = async (req, res) => {
+  try {
+    const {
+      yearStart,
+      yearEnd,
+      auctionDate,
+      auctionDateStart,
+      auctionDateEnd,
+      vehicleCondition,
+      locationId,
+      make,
+      model,
+      series,
+      bodyStyle,
+      engine,
+      transmission,
+      driveType,
+      fuelType,
+      buyNowPrice,
+      maxPrice,
+      minPrice,
+      color,
+      search,
+      sortType,
+      lot_number, // ✅ ADDED
+    } = req.query;
+
+    const defaultLimit = 100000000000;
+    const defaultPage = 1;
+    const entry = parseInt(req.query.entry) || defaultLimit;
+    const page = parseInt(req.query.page) || defaultPage;
+    const limit = Math.max(1, entry);
+    const offset = (Math.max(1, page) - 1) * limit;
+
+    let query = `
+      SELECT 
+        v.*,
+        c.cityName,
+        bidtbl.auctionStatus
+      FROM tbl_vehicles v
+
+      INNER JOIN tbl_brands b 
+        ON b.brandName COLLATE utf8mb4_unicode_ci = v.make COLLATE utf8mb4_unicode_ci
+        AND b.status = 'Y'
+
+      INNER JOIN tbl_model m
+        ON m.modelName COLLATE utf8mb4_unicode_ci = v.model COLLATE utf8mb4_unicode_ci
+        AND m.brandId = b.id
+        AND m.status = 'Y'
+
+      LEFT JOIN tbl_cities c ON v.locationId = c.id
+
+      LEFT JOIN (
+        SELECT vehicleId, auctionStatus
+        FROM tbl_bid
+        WHERE id IN (
+          SELECT MAX(id)
+          FROM tbl_bid
+          WHERE DATE(startTime) = CURDATE() 
+          AND auctionStatus = 'live'
+          GROUP BY vehicleId
+        )
+      ) bidtbl ON v.id = bidtbl.vehicleId
+
+      WHERE v.vehicleStatus = 'Y'
+      AND v.approval = 'Y'
+      AND v.soldStatus = 'Unsold'
+    `;
+
+    const params = [];
+
+    // Auction Date filters
+    if (auctionDateStart && auctionDateEnd) {
+      query += ` AND v.auctionDate BETWEEN ? AND ?`;
+      params.push(auctionDateStart, auctionDateEnd);
+    } else if (auctionDate) {
+      query += ` AND v.auctionDate = ?`;
+      params.push(auctionDate);
+    }
+
+    // Location filter
+    if (locationId) {
+      query += ` AND v.locationId = ?`;
+      params.push(locationId);
+    }
+
+    // Price filters
+    if (maxPrice && minPrice) {
+      query += ` AND v.buyNowPrice BETWEEN ? AND ?`;
+      params.push(minPrice, maxPrice);
+    } else if (buyNowPrice) {
+      query += ` AND v.buyNowPrice <= ?`;
+      params.push(buyNowPrice);
+    }
+
+    // Year range filter
+    if (yearStart && yearEnd) {
+      query += ` AND v.year BETWEEN ? AND ?`;
+      params.push(yearStart, yearEnd);
+    } else if (yearStart) {
+      query += ` AND v.year >= ?`;
+      params.push(yearStart);
+    } else if (yearEnd) {
+      query += ` AND v.year <= ?`;
+      params.push(yearEnd);
+    }
+
+    // 🔍 Search filter
+    if (search) {
+      const s = `%${search.toLowerCase()}%`;
+      query += ` AND (
+        LOWER(v.make) LIKE ? OR
+        LOWER(v.model) LIKE ? OR
+        LOWER(v.series) LIKE ? OR
+        LOWER(v.bodyStyle) LIKE ? OR
+        LOWER(v.color) LIKE ? OR
+        LOWER(v.search) LIKE ?
+      )`;
+      for (let i = 0; i < 6; i++) params.push(s);
+    }
+
+    // ⭐⭐⭐ LOT NUMBER FILTER (NEW)
+    if (lot_number) {
+      query += ` AND v.lot_number = ?`;
+      params.push(lot_number);
+    }
+
+    // Make/model mapping if numeric
+    let makeName = make;
+    let modelName = model;
+
+    if (make && !isNaN(make)) {
+      const [rows] = await pool.query(
+        `SELECT brandName FROM tbl_brands WHERE id = ?`,
+        [make]
+      );
+      if (rows.length > 0) makeName = rows[0].brandName;
+    }
+
+    if (model && !isNaN(model)) {
+      const [rows] = await pool.query(
+        `SELECT modelName FROM tbl_model WHERE id = ?`,
+        [model]
+      );
+      if (rows.length > 0) modelName = rows[0].modelName;
+    }
+
+    const filters = {
+      make: makeName,
+      model: modelName,
+      series,
+      bodyStyle,
+      engine,
+      transmission,
+      driveType,
+      fuelType,
+      color,
+    };
+
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value) {
+        query += ` AND v.${key} = ?`;
+        params.push(value);
+      }
+    });
+
+    if (vehicleCondition && vehicleCondition !== "all") {
+      query += ` AND v.vehicleCondition = ?`;
+      params.push(vehicleCondition);
+    }
+
+    // Sorting
+    if (sortType) {
+      if (sortType === "low") query += ` ORDER BY v.buyNowPrice ASC`;
+      else if (sortType === "high") query += ` ORDER BY v.buyNowPrice DESC`;
+      else if (sortType === "new") query += ` ORDER BY v.auctionDate DESC`;
+      else query += ` ORDER BY v.id DESC`;
+    } else {
+      query += ` ORDER BY v.id DESC`;
+    }
+
+    // Pagination
+    query += ` LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+
+    const [vehicles] = await pool.query(query, params);
+
+    const vehiclesWithImages = vehicles.map((vehicle) => {
+      const processed = { ...vehicle };
+
+      try {
+        processed.buyNowPrice = formatingPrice(vehicle.buyNowPrice);
+      } catch {
+        processed.buyNowPrice = null;
+      }
+
+      try {
+        processed.currentBid = formatingPrice(vehicle.currentBid);
+      } catch {
+        processed.currentBid = null;
+      }
+
+      let imageUrls = [];
+      if (processed.image) {
+        try {
+          const publicIds = JSON.parse(processed.image);
+          if (Array.isArray(publicIds)) {
+            imageUrls = publicIds.map((publicId) =>
+              getPhotoUrl(publicId, {
+                width: 800,
+                crop: "limit",
+                quality: "auto",
+                fetch_format: "auto",
+              })
+            );
+          }
+        } catch {}
+      }
+
+      processed.images = imageUrls;
+      delete processed.image;
+
+      processed.cityName = processed.cityName || "Unknown";
+
+      return processed;
+    });
+
+    res.status(200).json(vehiclesWithImages);
+  } catch (error) {
+    console.error("Failed to fetch Vehicles:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: error.message,
+    });
+  }
+};
+
+export const getUnApprovedVehicles = async (req, res) => {
+  try {
+    const {
+      year,
+      auctionDate,
+      auctionDateStart,
+      auctionDateEnd,
+      vehicleCondition,
+      locationId,
+      make,
+      model,
+      series,
+      bodyStyle,
+      engine,
+      transmission,
+      driveType,
+      fuelType,
+      buyNowPrice,
+      maxPrice,
+      minPrice,
+      color,
+      search,
+      sortType,
+    } = req.query;
+
+    const defaultLimit = 100000000000;
+    const defaultPage = 1;
+    const entry = parseInt(req.query.entry) || defaultLimit;
+    const page = parseInt(req.query.page) || defaultPage;
+    const limit = Math.max(1, entry);
+    const offset = (Math.max(1, page) - 1) * limit;
+
+    let query = `
+      SELECT v.*, c.cityName
+      FROM tbl_vehicles v
+      LEFT JOIN tbl_cities c ON v.locationId = c.id
+      WHERE v.vehicleStatus = 'Y'
+      AND v.approval = 'N'
+    `;
+
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM tbl_vehicles v
+      LEFT JOIN tbl_cities c ON v.locationId = c.id
+      WHERE v.vehicleStatus = 'Y'
+      AND v.approval = 'N'
+    `;
+
+    const params = [];
+    const countParams = [];
+
+    // Auction Date filters
+    if (auctionDateStart && auctionDateEnd) {
+      query += ` AND v.auctionDate BETWEEN ? AND ?`;
+      countQuery += ` AND v.auctionDate BETWEEN ? AND ?`;
+      params.push(auctionDateStart, auctionDateEnd);
+      countParams.push(auctionDateStart, auctionDateEnd);
+    } else if (auctionDate) {
+      query += ` AND v.auctionDate = ?`;
+      countQuery += ` AND v.auctionDate = ?`;
+      params.push(auctionDate);
+      countParams.push(auctionDate);
+    }
+
+    // Location filter
+    if (locationId) {
+      query += ` AND v.locationId = ?`;
+      countQuery += ` AND v.locationId = ?`;
+      params.push(locationId);
+      countParams.push(locationId);
+    }
+
+    // Price filters
+    if (maxPrice && minPrice) {
+      query += ` AND v.buyNowPrice BETWEEN ? AND ?`;
+      countQuery += ` AND v.buyNowPrice BETWEEN ? AND ?`;
+      params.push(minPrice, maxPrice);
+      countParams.push(minPrice, maxPrice);
+    } else if (buyNowPrice) {
+      query += ` AND v.buyNowPrice <= ?`;
+      countQuery += ` AND v.buyNowPrice <= ?`;
+      params.push(buyNowPrice);
+      countParams.push(buyNowPrice);
+    }
+
+    if (year) {
+      query += ` AND v.year = ?`;
+      countQuery += ` AND v.year = ?`;
+      params.push(year);
+      countParams.push(year);
+    }
+
+    // Search
+    if (search) {
+      query += ` AND (
+        v.make LIKE ? OR
+        v.model LIKE ? OR
+        v.series LIKE ? OR
+        v.bodyStyle LIKE ? OR
+        v.color LIKE ? OR
+        v.search LIKE ?
+      )`;
+
+      countQuery += ` AND (
+        v.make LIKE ? OR
+        v.model LIKE ? OR
+        v.series LIKE ? OR
+        v.bodyStyle LIKE ? OR
+        v.color LIKE ? OR
+        v.search LIKE ?
+      )`;
+
+      const searchTerm = `%${search}%`;
+      for (let i = 0; i < 6; i++) {
+        params.push(searchTerm);
+        countParams.push(searchTerm);
+      }
+    }
+
+    // Brand and model name resolution
+    let makeName = make;
+    let modelName = model;
+
+    if (make && !isNaN(make)) {
+      const [rows] = await pool.query(
+        `SELECT brandName FROM tbl_brands WHERE id = ?`,
+        [make]
+      );
+      if (rows.length > 0) {
+        makeName = rows[0].brandName;
+      }
+    }
+
+    if (model && !isNaN(model)) {
+      const [rows] = await pool.query(
+        `SELECT modelName FROM tbl_model WHERE id = ?`,
+        [model]
+      );
+      if (rows.length > 0) {
+        modelName = rows[0].modelName;
+      }
+    }
+
+    const filters = {
+      bodyStyle,
+      engine,
+      transmission,
+      driveType,
+      fuelType,
+      color,
+    };
+
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value) {
+        query += ` AND v.${key} = ?`;
+        countQuery += ` AND v.${key} = ?`;
+        params.push(value);
+        countParams.push(value);
+      }
+    });
+
+    if (vehicleCondition && vehicleCondition !== "all") {
+      query += ` AND v.vehicleCondition = ?`;
+      countQuery += ` AND v.vehicleCondition = ?`;
+      params.push(vehicleCondition);
+      countParams.push(vehicleCondition);
+    }
+
+    // Sorting
+    if (sortType) {
+      if (sortType === "low") {
+        query += ` ORDER BY v.buyNowPrice ASC`;
+      } else if (sortType === "high") {
+        query += ` ORDER BY v.buyNowPrice DESC`;
+      } else if (sortType === "new") {
+        query += ` ORDER BY v.auctionDate DESC`;
+      } else {
+        query += ` ORDER BY v.auctionDate DESC`;
+      }
+    } else {
+      query += ` ORDER BY v.id ASC`;
+    }
+
+    query += ` LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+
+    const [vehicles] = await pool.query(query, params);
+    const [totalVehicles] = await pool.query(countQuery, countParams);
+    const total = totalVehicles[0].total;
+
+    // Add images and format prices
+    const vehiclesWithImages = await Promise.all(
+      vehicles.map(async (vehicle) => {
+        const processedVehicle = { ...vehicle };
+
+        try {
+          processedVehicle.buyNowPrice = formatingPrice(vehicle.buyNowPrice);
+        } catch {
+          processedVehicle.buyNowPrice = null;
+        }
+        try {
+          processedVehicle.currentBid = formatingPrice(vehicle.currentBid);
+        } catch {
+          processedVehicle.currentBid = null;
+        }
+
+        let imageUrls = [];
+        if (processedVehicle.image) {
+          try {
+            const publicIds = JSON.parse(processedVehicle.image);
+            if (Array.isArray(publicIds)) {
+              imageUrls = publicIds
+                .map((publicId) =>
+                  getPhotoUrl(publicId, {
+                    width: 800,
+                    crop: "limit",
+                    quality: "auto",
+                    fetch_format: "auto",
+                  })
+                )
+                .filter(Boolean);
+            }
+          } catch {
+            imageUrls = [];
+          }
+        }
+
+        processedVehicle.images = imageUrls;
+        delete processedVehicle.image;
+
+        return processedVehicle;
+      })
+    );
+
+    res.status(200).json(vehiclesWithImages);
+  } catch (error) {
+    console.error("Failed to fetch Vehicles:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: error.message,
+    });
+  }
+};
+
+//get awaiting vehciles list
+export const getawatingApprovedVehicles = async (req, res) => {
+  try {
+    const {
+      year,
+      auctionDate,
+      auctionDateStart,
+      auctionDateEnd,
+      vehicleCondition,
+      locationId,
+      make,
+      model,
+      series,
+      bodyStyle,
+      engine,
+      transmission,
+      driveType,
+      fuelType,
+      buyNowPrice,
+      maxPrice,
+      minPrice,
+      color,
+      search,
+      sortType,
+    } = req.query;
+
+    const defaultLimit = 100000000000;
+    const defaultPage = 1;
+    const entry = parseInt(req.query.entry) || defaultLimit;
+    const page = parseInt(req.query.page) || defaultPage;
+    const limit = Math.max(1, entry);
+    const offset = (Math.max(1, page) - 1) * limit;
+
+    let query = `
+      SELECT v.*, c.cityName
+      FROM tbl_vehicles v
+      LEFT JOIN tbl_cities c ON v.locationId = c.id
+      WHERE v.vehicleStatus = 'Y'
+      AND v.approval = 'A'
+    `;
+
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM tbl_vehicles v
+      LEFT JOIN tbl_cities c ON v.locationId = c.id
+      WHERE v.vehicleStatus = 'Y'
+      AND v.approval = 'A'
+    `;
+
+    const params = [];
+    const countParams = [];
+
+    // Auction Date filters
+    if (auctionDateStart && auctionDateEnd) {
+      query += ` AND v.auctionDate BETWEEN ? AND ?`;
+      countQuery += ` AND v.auctionDate BETWEEN ? AND ?`;
+      params.push(auctionDateStart, auctionDateEnd);
+      countParams.push(auctionDateStart, auctionDateEnd);
+    } else if (auctionDate) {
+      query += ` AND v.auctionDate = ?`;
+      countQuery += ` AND v.auctionDate = ?`;
+      params.push(auctionDate);
+      countParams.push(auctionDate);
+    }
+
+    // Location filter
+    if (locationId) {
+      query += ` AND v.locationId = ?`;
+      countQuery += ` AND v.locationId = ?`;
+      params.push(locationId);
+      countParams.push(locationId);
+    }
+
+    // Price filters
+    if (maxPrice && minPrice) {
+      query += ` AND v.buyNowPrice BETWEEN ? AND ?`;
+      countQuery += ` AND v.buyNowPrice BETWEEN ? AND ?`;
+      params.push(minPrice, maxPrice);
+      countParams.push(minPrice, maxPrice);
+    } else if (buyNowPrice) {
+      query += ` AND v.buyNowPrice <= ?`;
+      countQuery += ` AND v.buyNowPrice <= ?`;
+      params.push(buyNowPrice);
+      countParams.push(buyNowPrice);
+    }
+
+    if (year) {
+      query += ` AND v.year = ?`;
+      countQuery += ` AND v.year = ?`;
+      params.push(year);
+      countParams.push(year);
+    }
+
+    // Search
+    if (search) {
+      query += ` AND (
+        v.make LIKE ? OR
+        v.model LIKE ? OR
+        v.series LIKE ? OR
+        v.bodyStyle LIKE ? OR
+        v.color LIKE ? OR
+        v.search LIKE ?
+      )`;
+
+      countQuery += ` AND (
+        v.make LIKE ? OR
+        v.model LIKE ? OR
+        v.series LIKE ? OR
+        v.bodyStyle LIKE ? OR
+        v.color LIKE ? OR
+        v.search LIKE ?
+      )`;
+
+      const searchTerm = `%${search}%`;
+      for (let i = 0; i < 6; i++) {
+        params.push(searchTerm);
+        countParams.push(searchTerm);
+      }
+    }
+
+    // Brand and model name resolution
+    let makeName = make;
+    let modelName = model;
+
+    if (make && !isNaN(make)) {
+      const [rows] = await pool.query(
+        `SELECT brandName FROM tbl_brands WHERE id = ?`,
+        [make]
+      );
+      if (rows.length > 0) {
+        makeName = rows[0].brandName;
+      }
+    }
+
+    if (model && !isNaN(model)) {
+      const [rows] = await pool.query(
+        `SELECT modelName FROM tbl_model WHERE id = ?`,
+        [model]
+      );
+      if (rows.length > 0) {
+        modelName = rows[0].modelName;
+      }
+    }
+
+    const filters = {
+      bodyStyle,
+      engine,
+      transmission,
+      driveType,
+      fuelType,
+      color,
+    };
+
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value) {
+        query += ` AND v.${key} = ?`;
+        countQuery += ` AND v.${key} = ?`;
+        params.push(value);
+        countParams.push(value);
+      }
+    });
+
+    if (vehicleCondition && vehicleCondition !== "all") {
+      query += ` AND v.vehicleCondition = ?`;
+      countQuery += ` AND v.vehicleCondition = ?`;
+      params.push(vehicleCondition);
+      countParams.push(vehicleCondition);
+    }
+
+    // Sorting
+    if (sortType) {
+      if (sortType === "low") {
+        query += ` ORDER BY v.buyNowPrice ASC`;
+      } else if (sortType === "high") {
+        query += ` ORDER BY v.buyNowPrice DESC`;
+      } else if (sortType === "new") {
+        query += ` ORDER BY v.auctionDate DESC`;
+      } else {
+        query += ` ORDER BY v.auctionDate DESC`;
+      }
+    } else {
+      query += ` ORDER BY v.id ASC`;
+    }
+
+    query += ` LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+
+    const [vehicles] = await pool.query(query, params);
+    const [totalVehicles] = await pool.query(countQuery, countParams);
+    const total = totalVehicles[0].total;
+
+    // Add images and format prices
+    const vehiclesWithImages = await Promise.all(
+      vehicles.map(async (vehicle) => {
+        const processedVehicle = { ...vehicle };
+
+        try {
+          processedVehicle.buyNowPrice = formatingPrice(vehicle.buyNowPrice);
+        } catch {
+          processedVehicle.buyNowPrice = null;
+        }
+        try {
+          processedVehicle.currentBid = formatingPrice(vehicle.currentBid);
+        } catch {
+          processedVehicle.currentBid = null;
+        }
+
+        let imageUrls = [];
+        if (processedVehicle.image) {
+          try {
+            const publicIds = JSON.parse(processedVehicle.image);
+            if (Array.isArray(publicIds)) {
+              imageUrls = publicIds
+                .map((publicId) =>
+                  getPhotoUrl(publicId, {
+                    width: 800,
+                    crop: "limit",
+                    quality: "auto",
+                    fetch_format: "auto",
+                  })
+                )
+                .filter(Boolean);
+            }
+          } catch {
+            imageUrls = [];
+          }
+        }
+
+        processedVehicle.images = imageUrls;
+        delete processedVehicle.image;
+
+        return processedVehicle;
+      })
+    );
+
+    res.status(200).json(vehiclesWithImages);
+  } catch (error) {
+    console.error("Failed to fetch Vehicles:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: error.message,
+    });
+  }
+};
+
+export const ApprovedVehicles = async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    if (!id) {
+      return res.status(400).send("Bad Request! Please enter the ID!");
+    }
+
+    const apprVehicles = await pool.query(
+      `update tbl_vehicles set approval = 'Y' where id = ?`,
+      [id]
+    );
+
+    const [updatedVehicle] = await pool.query(
+      `select * from tbl_vehicles where id = ?`,
+      [id]
+    );
+
+    res.status(200).send({ ...updatedVehicle[0] });
+  } catch (error) {
+    res.status(500).send("Internal Server Error!");
+    console.error(error);
+  }
+};
+
+export const AwaitingApprovedVehicles = async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    if (!id) {
+      return res.status(400).send("Bad Request! Please enter the ID!");
+    }
+
+    const apprVehicles = await pool.query(
+      `update tbl_vehicles set approval = 'A' where id = ?`,
+      [id]
+    );
+
+    const [updatedVehicle] = await pool.query(
+      `select * from tbl_vehicles where id = ?`,
+      [id]
+    );
+
+    res.status(200).send({ ...updatedVehicle[0] });
+  } catch (error) {
+    res.status(500).send("Internal Server Error!");
+    console.error(error);
   }
 };

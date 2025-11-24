@@ -17,37 +17,25 @@ import moment from "moment-timezone";
 
 export const myBids = async (req, res) => {
   try {
-    const id = req.params.id;
-
-    const [rows] = await pool.query(`select * from tbl_bid where userId = ?`, [id]);
-    const vehicleId = rows[0].vehicleId;
-    console.log(vehicleId);
-
+    const sellerId = req.params.id;
 
     const [result] = await pool.query(
-      `SELECT 
+      `
+      SELECT 
         b.id AS bidId,
-        b.userId,
+        b.userId AS buyerId,
         b.vehicleId,
-        b.estRetailValue,
         b.yourOffer,
         b.sellerOffer,
-        b.bidStatus,
-        b.eligibilityStatus,
-        b.saleStatus,
-        b.maxBid,
-        b.MonsterBid,
-        b.bidApprStatus,
-        b.status AS bidStatusFlag,
         b.winStatus,
         b.createdAt AS bidCreatedAt,
         b.updatedAt AS bidUpdatedAt,
-        b.startTime,
-        b.endTime,
-        b.auctionStatus,
+
+        -- Highest Max Bid from ANY user for this vehicle
+        (SELECT MAX(maxBid) FROM tbl_bid WHERE vehicleId = v.id) AS maxBid,
 
         v.id AS vehicleId,
-        v.vin,
+        v.lot_number,
         v.year,
         v.make,
         v.model,
@@ -68,45 +56,44 @@ export const myBids = async (req, res) => {
         v.vehicleStatus,
         v.image,
         v.certifyStatus,
+        v.userId AS sellerId,
 
-        u.id AS userId,
-        u.name,
-        u.contact,
-        u.cnic,
-        u.address,
-        u.postcode,
-        u.email,
-        u.date,
-        u.role
+        u.name AS buyerName,
+        u.contact AS buyerContact,
+        u.email AS buyerEmail,
+        u.address AS buyerAddress,
+        u.cnic AS buyerCnic
 
       FROM tbl_vehicles v
-      JOIN tbl_bid b 
-      ON v.id = b.vehicleId
-      JOIN tbl_users u 
-      ON u.id = b.userId
+      JOIN tbl_bid b ON v.id = b.vehicleId
+      JOIN tbl_users u ON u.id = b.userId
       WHERE v.vehicleStatus = 'Y'
-      AND b.vehicleId = ?
-      AND b.winStatus = 'Won'
+      AND v.userId = ?
+      ORDER BY b.createdAt DESC
       `,
-      [vehicleId]
+      [sellerId]
     );
 
-    // Format result
-    const formattedResult = result.map((row) => {
-      const formatPriceField = (field) => {
+    if (result.length === 0) {
+      return res.status(200).json([]);
+    }
+
+    const formatted = result.map((row) => {
+      const formatPrice = (val) => {
         try {
-          return formatingPrice(row[field]);
+          return formatingPrice(val);
         } catch {
-          return null;
+          return val;
         }
       };
 
+      // Handle cloudinary images
       let cloudinaryImages = [];
       try {
         if (row.image) {
-          const parsed = JSON.parse(row.image);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            cloudinaryImages = parsed.map((publicId) =>
+          const imgArr = JSON.parse(row.image);
+          if (Array.isArray(imgArr)) {
+            cloudinaryImages = imgArr.map((publicId) =>
               getPhotoUrl(publicId, {
                 width: 400,
                 crop: "thumb",
@@ -115,30 +102,54 @@ export const myBids = async (req, res) => {
             );
           }
         }
-      } catch (err) {
-        console.warn(
-          `Failed to parse image array for bidId ${row.bidId}:`,
-          err.message
-        );
-      }
+      } catch {}
 
       return {
-        ...row,
-        yourOffer: formatPriceField("yourOffer"),
-        sellerOffer: formatPriceField("sellerOffer"),
-        buyNowPrice: formatPriceField("buyNowPrice"),
-        currentBid: formatPriceField("currentBid"),
-        maxBid: formatPriceField("maxBid"),
-        MonsterBid: formatPriceField("MonsterBid"),
-        startTime: moment.utc(row.startTime).toISOString(),
-        endTime: moment.utc(row.endTime).toISOString(),
-        images: cloudinaryImages,
+        bidId: row.bidId,
+        vehicleId: row.vehicleId,
+
+        vehicleDetails: {
+          lot_number: row.lot_number,
+          year: row.year,
+          make: row.make,
+          model: row.model,
+          series: row.series,
+          bodyStyle: row.bodyStyle,
+          engine: row.engine,
+          transmission: row.transmission,
+          driveType: row.driveType,
+          fuelType: row.fuelType,
+          color: row.color,
+          mileage: row.mileage,
+          auctionDate: row.auctionDate,
+          currentBid: formatPrice(row.currentBid),
+          buyNowPrice: formatPrice(row.buyNowPrice),
+          certifyStatus: row.certifyStatus,
+          images: cloudinaryImages,
+        },
+
+        bidDetails: {
+          yourOffer: formatPrice(row.yourOffer),
+          sellerOffer: formatPrice(row.sellerOffer),
+          maxBid: formatPrice(row.maxBid), // NOW ALWAYS TRUE HIGHEST VALUE
+          winStatus: row.winStatus,
+          bidCreatedAt: row.bidCreatedAt,
+          bidUpdatedAt: row.bidUpdatedAt,
+        },
+
+        buyerDetails: {
+          name: row.buyerName,
+          email: row.buyerEmail,
+          contact: row.buyerContact,
+          address: row.buyerAddress,
+          cnic: row.buyerCnic,
+        },
       };
     });
 
-    return res.status(200).json(formattedResult);
+    return res.status(200).json(formatted);
   } catch (error) {
-    console.error("Error in myBids controller:", error);
+    console.error("Error in myBids:", error);
     res.status(500).json({
       success: false,
       message: "Internal server error",
@@ -172,7 +183,7 @@ export const bidsForAdmin = async (req, res) => {
         b.auctionStatus,
 
         v.id AS vehicleId,
-        v.vin,
+        v.lot_number,
         v.year,
         v.make,
         v.model,
@@ -212,7 +223,7 @@ export const bidsForAdmin = async (req, res) => {
       WHERE v.vehicleStatus = 'Y'
       AND b.winStatus = 'Won'
       `
-     );
+    );
 
     // Format result
     const formattedResult = result.map((row) => {
@@ -317,7 +328,7 @@ export const lotsWon = async (req, res) => {
         AND (
           v.make LIKE ? OR 
           v.model LIKE ? OR 
-          v.vin LIKE ? OR 
+          v.lot_number LIKE ? OR 
           v.color LIKE ? OR
           b.estRetailValue LIKE ?
         )
@@ -458,7 +469,7 @@ export const lotsLost = async (req, res) => {
         AND (
           v.make LIKE ? OR 
           v.model LIKE ? OR 
-          v.vin LIKE ? OR 
+          v.lot_number LIKE ? OR 
           v.color LIKE ? OR
           b.estRetailValue LIKE ?
         )
@@ -592,7 +603,7 @@ export const myOffers = async (req, res) => {
                 AND (
                     v.make LIKE ? OR 
                     v.model LIKE ? OR 
-                    v.vin LIKE ? OR 
+                    v.lot_number LIKE ? OR 
                     v.color LIKE ? OR
                     b.estRetailValue LIKE ?
                 )
@@ -653,7 +664,8 @@ export const myOffers = async (req, res) => {
 export const liveAuctions = async (req, res) => {
   try {
     const id = req.params.id;
-      const [result] = await pool.query(`
+    const [result] = await pool.query(
+      `
     SELECT 
       b.id AS bidId,
       b.userId,
@@ -676,7 +688,7 @@ export const liveAuctions = async (req, res) => {
       b.auctionStatus,
 
       v.id AS vehicleId,
-      v.vin,
+      v.lot_number,
       v.year,
       v.make,
       v.model,
@@ -717,8 +729,9 @@ export const liveAuctions = async (req, res) => {
       AND (u.role = 'seller' OR u.role = 'admin')
       AND u.id = ?
       AND b.startTime >= CURDATE()
-  `, [id]);
-
+  `,
+      [id]
+    );
 
     const formattedResult = result.map((row) => {
       // Format prices safely
@@ -779,7 +792,7 @@ export const liveAuctions = async (req, res) => {
 export const liveAuctionsForAdmin = async (req, res) => {
   try {
     const [result] = await pool.query(`
-        SELECT 
+      SELECT 
         b.id AS bidId,
         b.userId,
         b.vehicleId,
@@ -801,7 +814,7 @@ export const liveAuctionsForAdmin = async (req, res) => {
         b.auctionStatus,
 
         v.id AS vehicleId,
-        v.vin,
+        v.lot_number,
         v.year,
         v.make,
         v.model,
@@ -816,6 +829,7 @@ export const liveAuctionsForAdmin = async (req, res) => {
         v.vehicleCondition,
         v.keysAvailable,
         v.locationId,
+        c.cityName as locationId,
         v.auctionDate,
         v.currentBid,
         v.buyNowPrice,
@@ -836,6 +850,7 @@ export const liveAuctionsForAdmin = async (req, res) => {
       FROM tbl_vehicles v
       JOIN tbl_bid b ON v.id = b.vehicleId
       JOIN tbl_users u ON u.id = b.userId
+      LEFT JOIN tbl_cities c ON v.locationId = c.id
       WHERE 
         b.auctionStatus = 'live' 
         AND v.vehicleStatus = 'Y' 
@@ -845,7 +860,6 @@ export const liveAuctionsForAdmin = async (req, res) => {
     `);
 
     const formattedResult = result.map((row) => {
-      // Format prices safely
       const formatPriceField = (field) => {
         try {
           return formatingPrice(row[field]);
@@ -857,7 +871,7 @@ export const liveAuctionsForAdmin = async (req, res) => {
       let cloudinaryImages = [];
       try {
         if (row.image) {
-          const parsed = JSON.parse(row.image); // Expected: ["id1", "id2", ...]
+          const parsed = JSON.parse(row.image);
           if (Array.isArray(parsed) && parsed.length > 0) {
             cloudinaryImages = parsed.map((publicId) =>
               getPhotoUrl(publicId, {
@@ -886,6 +900,7 @@ export const liveAuctionsForAdmin = async (req, res) => {
         startTime: moment.utc(row.startTime).toISOString(),
         endTime: moment.utc(row.endTime).toISOString(),
         images: cloudinaryImages,
+        cityName: row.cityName || "Unknown",
       };
     });
 
@@ -938,7 +953,8 @@ export const liveAuctionsById = async (req, res) => {
 export const upcomingAuctions = async (req, res) => {
   try {
     const id = req.params.id;
-    const [result] = await pool.query(`
+    const [result] = await pool.query(
+      `
       SELECT 
         b.id AS bidId,
         b.userId,
@@ -961,7 +977,7 @@ export const upcomingAuctions = async (req, res) => {
         b.auctionStatus,
 
         v.id AS vehicleId,
-        v.vin,
+        v.lot_number,
         v.year,
         v.make,
         v.model,
@@ -1004,7 +1020,8 @@ export const upcomingAuctions = async (req, res) => {
         AND b.startTime >= CURDATE()
 
     `,
-  [id]);
+      [id]
+    );
 
     const formattedResult = result.map((row) => {
       // Format prices safely
@@ -1089,7 +1106,7 @@ export const upcomingAuctionsForAdmin = async (req, res) => {
         b.auctionStatus,
 
         v.id AS vehicleId,
-        v.vin,
+        v.lot_number,
         v.year,
         v.make,
         v.model,
@@ -1104,6 +1121,7 @@ export const upcomingAuctionsForAdmin = async (req, res) => {
         v.vehicleCondition,
         v.keysAvailable,
         v.locationId,
+        c.cityName as locationId,
         v.auctionDate,
         v.currentBid,
         v.buyNowPrice,
@@ -1124,13 +1142,14 @@ export const upcomingAuctionsForAdmin = async (req, res) => {
       FROM tbl_bid b
       JOIN tbl_vehicles v ON v.id = b.vehicleId
       JOIN tbl_users u ON u.id = b.userId
+      LEFT JOIN tbl_cities c ON v.locationId = c.id
       WHERE
         b.auctionStatus = 'upcoming'
         AND v.vehicleStatus = 'Y'
-        AND (u.role = 'seller' OR u.role = 'admin')`);
+        AND (u.role = 'seller' OR u.role = 'admin')
+    `);
 
     const formattedResult = result.map((row) => {
-      // Format prices safely
       const formatPriceField = (field) => {
         try {
           return formatingPrice(row[field]);
@@ -1168,11 +1187,10 @@ export const upcomingAuctionsForAdmin = async (req, res) => {
         currentBid: formatPriceField("currentBid"),
         maxBid: formatPriceField("maxBid"),
         MonsterBid: formatPriceField("MonsterBid"),
-        // startTime: new Date(row.startTime).toISOString().replace(/\.\d{3}Z$/, 'Z'),
-        // endTime: new Date(row.endTime).toISOString().replace(/\.\d{3}Z$/, 'Z'),
         startTime: moment.utc(row.startTime).toISOString(),
         endTime: moment.utc(row.endTime).toISOString(),
         images: cloudinaryImages,
+        cityName: row.cityName || "Unknown",
       };
     });
 
@@ -1213,17 +1231,22 @@ WHERE
 export const getCertifiedVehicles = async (req, res) => {
   try {
     const [vehicles] = await pool.query(`
-      SELECT * FROM tbl_vehicles
-      WHERE vehicleStatus = 'Y' AND certifyStatus = 'Certified'
+      SELECT 
+        v.*, 
+        c.cityName as locationId 
+      FROM tbl_vehicles v
+      LEFT JOIN tbl_cities c ON v.locationId = c.id
+      WHERE v.vehicleStatus = 'Y' 
+        AND v.certifyStatus = 'Certified' 
+        AND v.approval = 'Y'
     `);
 
     const vehiclesWithImages = vehicles.map((vehicle) => {
       let cloudinaryImages = [];
 
-      // Parse Cloudinary image public_ids
       try {
         if (vehicle.image) {
-          const parsed = JSON.parse(vehicle.image); // Expecting: ["id1", "id2"]
+          const parsed = JSON.parse(vehicle.image);
           if (Array.isArray(parsed)) {
             cloudinaryImages = parsed.map((publicId) =>
               getPhotoUrl(publicId, {
@@ -1244,7 +1267,8 @@ export const getCertifiedVehicles = async (req, res) => {
       return {
         ...vehicle,
         buyNowPrice: formatingPrice(vehicle.buyNowPrice),
-        images: cloudinaryImages, // array of URLs
+        images: cloudinaryImages,
+        cityName: vehicle.cityName || "Unknown",
       };
     });
 
@@ -1262,8 +1286,14 @@ export const getCertifiedVehicles = async (req, res) => {
 export const getNonCertifiedVehicles = async (req, res) => {
   try {
     const [vehicles] = await pool.query(`
-      SELECT * FROM tbl_vehicles
-      WHERE vehicleStatus = 'Y' AND certifyStatus = 'Non-Certified'
+      SELECT 
+        v.*, 
+        c.cityName as locationId
+      FROM tbl_vehicles v
+      LEFT JOIN tbl_cities c ON v.locationId = c.id
+      WHERE v.vehicleStatus = 'Y' 
+        AND v.certifyStatus = 'Non-Certified' 
+        AND v.approval = 'Y'
     `);
 
     const vehiclesWithImages = vehicles.map((vehicle) => {
@@ -1271,7 +1301,7 @@ export const getNonCertifiedVehicles = async (req, res) => {
 
       try {
         if (vehicle.image) {
-          const parsed = JSON.parse(vehicle.image); // Expected: ["id1", "id2"]
+          const parsed = JSON.parse(vehicle.image);
           if (Array.isArray(parsed)) {
             cloudinaryImages = parsed.map((publicId) =>
               getPhotoUrl(publicId, {
@@ -1293,6 +1323,7 @@ export const getNonCertifiedVehicles = async (req, res) => {
         ...vehicle,
         buyNowPrice: formatingPrice(vehicle.buyNowPrice),
         images: cloudinaryImages,
+        cityName: vehicle.cityName || "Unknown",
       };
     });
 
@@ -1311,6 +1342,17 @@ export const getVehiclesById = async (req, res) => {
   try {
     const id = req.params.id;
     const { search } = req.query;
+
+    // ✅ Try to read userId, but don't require token
+    let userId = null;
+    try {
+      userId = req.user?.id || req.user?.userId || null;
+    } catch {
+      userId = null;
+    }
+
+    console.log("Decoded user:", req.user || "No user");
+    console.log("Extracted userId:", userId);
 
     let query = `
       SELECT        
@@ -1335,7 +1377,7 @@ export const getVehiclesById = async (req, res) => {
         b.auctionStatus,
 
         v.id AS vehicleId,
-        v.vin,
+        v.lot_number,
         v.year,
         v.make,
         v.model,
@@ -1366,7 +1408,6 @@ export const getVehiclesById = async (req, res) => {
         u.email,
         u.date,
         u.role
-
       FROM tbl_vehicles v
       LEFT JOIN tbl_bid b ON v.id = b.vehicleId
       LEFT JOIN tbl_users u ON u.id = b.userId
@@ -1388,23 +1429,31 @@ export const getVehiclesById = async (req, res) => {
       return res.status(404).json({ message: "No vehicles found" });
     }
 
+    // ✅ If user is logged in, fetch their max bid; else skip
+    let userMaxBid = null;
+    if (userId) {
+      const [maxBidResult] = await pool.query(
+        `SELECT MAX(maxBid) AS userMaxBid FROM tbl_bid WHERE vehicleId = ? AND userId = ?`,
+        [id, userId]
+      );
+      userMaxBid = maxBidResult[0]?.userMaxBid || null;
+      console.log("UserMaxBid:", userMaxBid);
+    }
+
+    // ✅ Format data properly
     const vehiclesWithImages = vehicles.map((vehicle) => {
       const processedVehicle = { ...vehicle };
 
-      // price formatting
-      try {
-        processedVehicle.buyNowPrice = formatingPrice(vehicle.buyNowPrice);
-      } catch {
-        processedVehicle.buyNowPrice = null;
-      }
+      // Format prices safely
+      processedVehicle.buyNowPrice = vehicle.buyNowPrice
+        ? formatingPrice(vehicle.buyNowPrice)
+        : null;
 
-      try {
-        processedVehicle.currentBid = formatingPrice(vehicle.currentBid);
-      } catch {
-        processedVehicle.currentBid = null;
-      }
+      processedVehicle.currentBid = vehicle.currentBid
+        ? formatingPrice(vehicle.currentBid)
+        : null;
 
-      // cloudinary images
+      // Handle Cloudinary images safely
       try {
         if (vehicle.image) {
           const parsed = JSON.parse(vehicle.image);
@@ -1428,6 +1477,7 @@ export const getVehiclesById = async (req, res) => {
 
       delete processedVehicle.image;
 
+      // Convert times
       if (vehicle.bidId) {
         processedVehicle.startTime = vehicle.startTime
           ? moment.utc(vehicle.startTime).toISOString()
@@ -1437,11 +1487,13 @@ export const getVehiclesById = async (req, res) => {
           : null;
       }
 
+      // Attach user max bid (if logged in)
+      processedVehicle.userMaxBid = userMaxBid;
+
       return processedVehicle;
     });
 
     return res.status(200).json({ ...vehiclesWithImages[0] });
-
   } catch (error) {
     console.error("Failed to fetch vehicle by ID:", error);
     return res.status(500).json({
@@ -1455,11 +1507,11 @@ export const getVehiclesById = async (req, res) => {
 export const bidsPlacedById = async (req, res) => {
   try {
     const id = req.params.id;
- 
+
     if (!id) {
       return res.status(400).json({ message: "Please provide the ID" });
     }
- 
+
     const [result] = await pool.query(
       `SELECT        
         b.id AS bidId,
@@ -1483,7 +1535,7 @@ export const bidsPlacedById = async (req, res) => {
         b.auctionStatus,
  
         v.id AS vehicleId,
-        v.vin,
+        v.lot_number,
         v.year,
         v.make,
         v.model,
@@ -1524,13 +1576,13 @@ export const bidsPlacedById = async (req, res) => {
     `,
       [id]
     );
- 
+
     if (!result.length) {
       return res
         .status(404)
         .json({ message: "No bids found for this vehicle" });
     }
- 
+
     const formattedResult = result.map((row) => {
       // Format prices safely
       const formatPriceField = (field) => {
@@ -1540,7 +1592,7 @@ export const bidsPlacedById = async (req, res) => {
           return null;
         }
       };
- 
+
       let cloudinaryImages = [];
       try {
         if (row.image) {
@@ -1575,18 +1627,18 @@ export const bidsPlacedById = async (req, res) => {
         images: cloudinaryImages,
       };
     });
- 
+
     // console.log(
     //   "Emitting to room",
     //   `vehicle_${id}`,
     //   Array.from(await io.in(`vehicle_${id}`).allSockets())
     // );
- 
+
     // io.to(`vehicle_${id}`).emit("bidUpdate", {
     //   vehicleId: id,
     //   latestBid: formattedResult[0],
     // });
- 
+
     return res.status(200).json(formattedResult);
   } catch (err) {
     console.error("Failed to fetch bidsPlacedById:", err);
@@ -1610,7 +1662,7 @@ export const purchasedVehicleData = async (req, res) => {
     const [result] = await pool.query(
       `SELECT
                 v.id AS vehicleId,
-                v.vin,
+                v.lot_number,
                 v.year,
                 v.make,
                 v.model,

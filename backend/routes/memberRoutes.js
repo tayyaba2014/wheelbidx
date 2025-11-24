@@ -49,14 +49,22 @@ import {
   becomePartnerForm,
   contactFrom,
   deleteContactUs,
+  getSubscribeUser,
   giveSuggestion,
+  subscribeUser,
   updateContactUs,
 } from "../controllers/contactUsController.js";
 import {
   getVehiclePrices,
   getVehicleSpecs,
 } from "../controllers/featureSpecController.js";
-import { registerByEmailOTP, registerEmailVerification, updatePassword, verifyEmail, verifyOTP } from "../controllers/authController.js";
+import {
+  registerByEmailOTP,
+  registerEmailVerification,
+  updatePassword,
+  verifyEmail,
+  verifyOTP,
+} from "../controllers/authController.js";
 
 const app = express();
 
@@ -69,8 +77,8 @@ export default (app) => {
 
   app.get("/customer/lotsWon", lotsWon); //this is pending
 
-  app.get("/customer/lotsLost", lotsLost); 
- 
+  app.get("/customer/lotsLost", lotsLost);
+
   app.get("/customer/myOffers", myOffers);
 
   //start bidding
@@ -127,27 +135,30 @@ export default (app) => {
 
   app.post("/bidStartEnds", bidStartEnds);
 
-  app.post('/customer/registerByEmailOTP', registerByEmailOTP);
+  app.post("/customer/registerByEmailOTP", registerByEmailOTP);
 
-  app.post('/customer/verifyOTP', verifyOTP);
+  app.post("/customer/verifyOTP", verifyOTP);
 
-  app.post('/customer/registerEmailVerification', registerEmailVerification);
+  app.post("/customer/registerEmailVerification", registerEmailVerification);
 
   // app.post('/customer/verifyEmail', verifyEmail, (req, res) =>{
   //   res.redirect(`${process.env.FRONTEND_URL}`)
   // });
 
-  app.post('/customer/verifyEmail/:id', verifyEmail);
+  app.post("/customer/verifyEmail/:id", verifyEmail);
 
   //for testing:
-  app.get('/getUsers', getUsers);
+  app.get("/getUsers", getUsers);
 
-  app.post('/truncateData', truncateData);
+  app.post("/truncateData", truncateData);
 
-  app.post('/customer/becomePartnerForm', becomePartnerForm);
+  app.post("/customer/becomePartnerForm", becomePartnerForm);
 
-  app.post('/customer/giveSuggestion', giveSuggestion);
+  app.post("/customer/giveSuggestion", giveSuggestion);
 
-  app.put('/updatePassword/:id', updatePassword);
- 
+  app.put("/updatePassword/:id", updatePassword);
+
+  app.post("/subscribe", subscribeUser);
+
+  app.get("/getSubscribeUser", getSubscribeUser);
 };

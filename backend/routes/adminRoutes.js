@@ -31,6 +31,7 @@ import {
   getFundWithdrawl,
 } from "../controllers/paymentController.js";
 import { addLocation } from "../controllers/locationController.js";
+
 import {
   deleteSellerIndividuals,
   getSellerIndividuals,
@@ -76,6 +77,7 @@ import {
   deleteSereis,
   getBrandById,
   getBrands,
+  fetchVehicleYears,
   getCitites,
   getCititesById,
   getModelById,
@@ -95,7 +97,15 @@ import {
   purchasedVehicleData,
   upcomingAuctionsForAdmin,
 } from "../controllers/bidReportingController.js";
-import { checkVehicles } from "../controllers/vehicleController.js";
+import {
+  addVehicleForAdmin,
+  ApprovedVehicles,
+  AwaitingApprovedVehicles,
+  checkVehicles,
+  getApprovedVehicles,
+  getawatingApprovedVehicles,
+  getUnApprovedVehicles,
+} from "../controllers/vehicleController.js";
 import passport from "passport";
 import dotenv from "dotenv";
 import jwt from "jsonwebtoken";
@@ -242,6 +252,8 @@ export default (app) => {
 
   app.get("/admin/getBrands", getBrands);
 
+  app.get("/admin/fetchVehicleYears", fetchVehicleYears);
+
   app.put("/admin/updateBrand/:id", upload.single("logo"), updateBrands); // //changes required
 
   app.patch("/admin/deleteBrand/:id", deleteBrand); // //changes required
@@ -284,13 +296,25 @@ export default (app) => {
 
   app.get("/admin/getPartner", getPartner);
 
-  app.post('/addCity', addCity);
- 
-  app.get('/getCitites', getCitites);
- 
-  app.put('/updateCity/:id', updateCity);
- 
-  app.patch('/deleteCity/:id', deleteCity);
- 
-  app.get('/getCititesById/:id', getCititesById);
+  app.post("/addCity", addCity);
+
+  app.get("/getCitites", getCitites);
+
+  app.put("/updateCity/:id", updateCity);
+
+  app.patch("/deleteCity/:id", deleteCity);
+
+  app.get("/getCititesById/:id", getCititesById);
+
+  app.get("/getApprovedVehicles", getApprovedVehicles);
+
+  app.get("/getUnApprovedVehicles", getUnApprovedVehicles);
+
+  app.get("/getawatingApprovedVehicles", getawatingApprovedVehicles);
+
+  app.put("/ApprovedVehicles/:id", ApprovedVehicles);
+
+  app.put("/AwaitingApprovedVehicles/:id", AwaitingApprovedVehicles);
+
+  app.post("/addVehicleForAdmin", uploadVehicleImages, addVehicleForAdmin);
 };

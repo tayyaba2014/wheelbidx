@@ -10,31 +10,49 @@ import {
   deleteFileFromCloudinary,
 } from "../utils/cloudinary.js";
 
-export const getBrands = async (req, res) => {
+// old code_1
+/* export const getBrands = async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 10000000;
     const page = parseInt(req.query.page) || 1;
     const offset = (page - 1) * limit;
     const search = req.query.search ? `%${req.query.search}%` : null;
 
+    // 🔹 Base query — count only approved vehicles
     let query = `
-      SELECT *
-      FROM tbl_brands
-      WHERE status = 'Y'
+      SELECT 
+        b.id,
+        b.brandName,
+        b.logo,
+        b.status,
+        COUNT(v.id) AS vehicleCount
+      FROM tbl_brands b
+      INNER JOIN tbl_vehicles v 
+        ON v.make COLLATE utf8mb4_unicode_ci = b.brandName COLLATE utf8mb4_unicode_ci
+      WHERE b.status = 'Y'
+        AND v.approval = 'Y'
     `;
+
     const params = [];
 
-    // Add search condition if provided
+    // 🔍 Optional search filter
     if (search) {
-      query += ` AND brandName LIKE ? `;
+      query += ` AND b.brandName LIKE ?`;
       params.push(search);
     }
 
-    query += ` ORDER BY brandName ASC LIMIT ? OFFSET ?`;
+    query += `
+      GROUP BY b.id
+      HAVING vehicleCount > 0
+      ORDER BY b.brandName ASC
+      LIMIT ? OFFSET ?
+    `;
+
     params.push(limit, offset);
 
     const [rows] = await pool.query(query, params);
 
+    // 🧩 Format response and safely parse logo
     const brands = rows.map((brand) => {
       let logoUrl = null;
 
@@ -54,15 +72,185 @@ export const getBrands = async (req, res) => {
       }
 
       return {
-        ...brand,
+        id: brand.id,
+        brandName: brand.brandName,
         logo: logoUrl,
+        status: brand.status,
+        vehicleCount: brand.vehicleCount || 0,
       };
     });
 
     return res.status(200).json(brands);
   } catch (error) {
     console.error("Error fetching brands:", error);
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
+  }
+}; */
+
+export const getBrands = async (req, res) => {
+  try {
+    const {
+      year,
+      auctionDate,
+      auctionDateStart,
+      auctionDateEnd,
+      locationId,
+      make,
+      model,
+      search,
+      maxPrice,
+      minPrice,
+      buyNowPrice,
+      vehicleCondition,
+    } = req.query;
+
+    const limit = parseInt(req.query.limit) || 10000000;
+    const page = parseInt(req.query.page) || 1;
+    const offset = (page - 1) * limit;
+
+    let query = `
+      SELECT 
+        b.id,
+        b.brandName,
+        b.logo,
+        b.status,
+        COUNT(v.id) AS vehicleCount
+      FROM tbl_brands b
+      INNER JOIN tbl_vehicles v 
+        ON v.make COLLATE utf8mb4_unicode_ci = b.brandName COLLATE utf8mb4_unicode_ci
+        AND v.vehicleStatus = 'Y'
+        AND v.approval = 'Y'
+        AND v.soldStatus = 'Unsold'
+      INNER JOIN tbl_model m
+        ON m.modelName COLLATE utf8mb4_unicode_ci = v.model COLLATE utf8mb4_unicode_ci
+        AND m.status = 'Y'
+        AND m.brandId = b.id
+    `;
+
+    const params = [];
+
+    // Apply filters to vehicles
+    if (auctionDateStart && auctionDateEnd) {
+      query += ` AND v.auctionDate BETWEEN ? AND ?`;
+      params.push(auctionDateStart, auctionDateEnd);
+    } else if (auctionDate) {
+      query += ` AND v.auctionDate = ?`;
+      params.push(auctionDate);
+    }
+
+    if (locationId) {
+      query += ` AND v.locationId = ?`;
+      params.push(locationId);
+    }
+
+    if (maxPrice && minPrice) {
+      query += ` AND v.buyNowPrice BETWEEN ? AND ?`;
+      params.push(minPrice, maxPrice);
+    } else if (buyNowPrice) {
+      query += ` AND v.buyNowPrice <= ?`;
+      params.push(buyNowPrice);
+    }
+
+    if (year) {
+      query += ` AND v.year = ?`;
+      params.push(year);
+    }
+
+    if (make) {
+      query += ` AND v.make = ?`;
+      params.push(make);
+    }
+
+    if (model) {
+      query += ` AND v.model = ?`;
+      params.push(model);
+    }
+
+    if (vehicleCondition && vehicleCondition !== "all") {
+      query += ` AND v.vehicleCondition = ?`;
+      params.push(vehicleCondition);
+    }
+
+    if (search) {
+      const term = `%${search.toLowerCase()}%`;
+      query += ` AND (
+        LOWER(v.make) LIKE ? OR
+        LOWER(v.model) LIKE ? OR
+        LOWER(v.series) LIKE ? OR
+        LOWER(v.bodyStyle) LIKE ? OR
+        LOWER(v.color) LIKE ? OR
+        LOWER(v.search) LIKE ?
+      )`;
+      for (let i = 0; i < 6; i++) params.push(term);
+    }
+
+    // Filter brands that are active
+    query += ` WHERE b.status = 'Y'`;
+
+    query += `
+      GROUP BY b.id
+      HAVING vehicleCount > 0
+      ORDER BY b.brandName ASC
+      LIMIT ? OFFSET ?
+    `;
+
+    params.push(limit, offset);
+
+    const [rows] = await pool.query(query, params);
+
+    // Parse logos
+    const brands = rows.map((brand) => {
+      let logoUrl = null;
+      try {
+        if (brand.logo) {
+          const parsed = JSON.parse(brand.logo);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            logoUrl = getPhotoUrl(parsed[0], {
+              width: 300,
+              crop: "fit",
+              quality: "auto",
+            });
+          }
+        }
+      } catch (err) {
+        console.warn(`Error parsing logo for brand ${brand.id}:`, err.message);
+      }
+
+      return {
+        id: brand.id,
+        brandName: brand.brandName,
+        logo: logoUrl,
+        status: brand.status,
+        vehicleCount: brand.vehicleCount || 0,
+      };
+    });
+
+    return res.status(200).json(brands);
+  } catch (error) {
+    console.error("Error fetching brands:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+export const fetchVehicleYears = async (req, res) => {
+  try {
+    const query = `
+      SELECT DISTINCT year
+      FROM tbl_vehicles
+      WHERE vehicleStatus = 'Y'
+        AND approval = 'Y'
+      ORDER BY year DESC
+    `;
+
+    const [rows] = await pool.query(query);
+
+    // Return just an array of years
+    const years = rows.map((row) => row.year);
+
+    return res.status(200).json(years); // <-- plain array
+  } catch (error) {
+    console.error("Error fetching vehicle years:", error);
+    return res.status(500).json({ error: "Internal server error" });
   }
 };
 
@@ -87,7 +275,9 @@ export const addBrands = async (req, res) => {
     const uploadedLocalFilePaths = [];
     let imagePublicId = null;
 
-    const misingFields = feilds.filter((field) => !req.body[field]);
+    const fields = ["brandName"];
+
+    const misingFields = fields.filter((field) => !req.body[field]);
     if (misingFields.lenght > 0) {
       res.status(400).send({
         missingfeilds: `${misingFields.join(", ")}`,
@@ -165,6 +355,20 @@ export const updateBrands = async (req, res) => {
     if (missingFields.length > 0) {
       return res.status(400).send({
         message: `Missing: ${missingFields.join(", ")}`,
+      });
+    }
+
+    const brandForComp = brandName.trim().toLowerCase();
+
+    const [checkExistingBrand] = await pool.query(
+      `SELECT * FROM tbl_brands WHERE LOWER(TRIM(brandName)) = ?`,
+      [brandForComp]
+    );
+
+    if (checkExistingBrand.length > 0) {
+      return res.status(400).json({
+        status: 400,
+        message: "Brand with this name already exists",
       });
     }
 
@@ -278,10 +482,7 @@ export const updateBrands = async (req, res) => {
       : null;
     delete responseBrand.logo; // Hide public_id if desired
 
-    return res.status(200).send({
-      success: true,
-      data: responseBrand,
-    });
+    return res.status(200).send({ ...responseBrand });
   } catch (e) {
     console.error("Error updating brand:", e);
 
@@ -354,46 +555,64 @@ export const addModel = async (req, res) => {
 
     const modelForComp = modelName.trim().toLowerCase();
 
-    const [checkExistingBrand] = await pool.query(
+    const [existingModels] = await pool.query(
       `SELECT * FROM tbl_model WHERE LOWER(TRIM(modelName)) = ?`,
       [modelForComp]
     );
 
-    if (checkExistingBrand.length > 0) {
+    if (existingModels.length > 0) {
       return res.status(400).json({
         status: 400,
         message: "Model with this name already exists",
       });
     }
 
-    const [query] = await pool.query(
+    const [insertResult] = await pool.query(
       "INSERT INTO tbl_model (brandId, modelName) VALUES (?, ?)",
       [brandId, modelName]
     );
 
-    const insertedId = query.insertId;
+    const insertedId = insertResult.insertId;
     console.log("Inserted model ID:", insertedId);
 
-    const [result] = await pool.query(
-      `select b.*, m.* from tbl_brands b
-        join tbl_model m on
-        b.id = m.brandId WHERE m.id = ?`,
+    const [rows] = await pool.query(
+      `SELECT b.brandName, m.modelName, m.id, m.brandId
+       FROM tbl_brands b
+       JOIN tbl_model m ON b.id = m.brandId
+       WHERE m.id = ?`,
       [insertedId]
     );
 
-    if (result.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({
         status: 404,
         message: "Model not found or inactive",
       });
     }
 
+    const result = rows[0];
+
+    const querySearch = `${result.brandName} ${result.modelName}`.trim();
+    console.log("Query Search:", querySearch);
+
+    await pool.query(`UPDATE tbl_model SET modelSearch = ? WHERE id = ?`, [
+      querySearch,
+      insertedId,
+    ]);
+
     res.status(200).json({
-      ...result[0],
+      ...result,
+      modelSearch: querySearch,
+      status: 200,
+      message: "Model added successfully",
     });
   } catch (error) {
     console.error("Error adding Model:", error);
-    res.status(500).json({ status: 500, message: "Internal server error" });
+    res.status(500).json({
+      status: 500,
+      message: "Internal server error",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
   }
 };
 
@@ -418,10 +637,11 @@ export const getModels = async (req, res) => {
       JOIN tbl_model m ON b.id = m.brandId
       WHERE m.status = 'Y'
     `;
+
     const params = [];
 
     if (search) {
-      query += ` AND TRIM(LOWER(b.brandName)) LIKE ?`;
+      query += ` AND TRIM(LOWER(m.modelSearch)) LIKE ?`;
       params.push(search.toLowerCase());
     }
 
@@ -441,18 +661,35 @@ export const getModelById = async (req, res) => {
   try {
     const id = req.params.id;
 
-    console.log(id);
-
     const [rows] = await pool.query(
-      `select b.*, m.* from tbl_brands b
-        join tbl_model m on 
-        b.id = m.brandId WHERE m.status = 'Y' and b.id = ?`,
+      `
+      SELECT 
+        m.id AS modelId,
+        m.modelName,
+        m.status,
+        b.id AS brandId,
+        b.brandName,
+        COUNT(v.id) AS vehicleCount
+      FROM tbl_model m
+      INNER JOIN tbl_brands b 
+        ON m.brandId = b.id
+      INNER JOIN tbl_vehicles v 
+        ON v.make COLLATE utf8mb4_unicode_ci = b.brandName COLLATE utf8mb4_unicode_ci
+        AND v.model COLLATE utf8mb4_unicode_ci = m.modelName COLLATE utf8mb4_unicode_ci
+        AND v.approval = 'Y'
+        AND v.vehicleStatus = 'Y'
+        AND v.soldStatus = 'Unsold'
+      WHERE m.status = 'Y' 
+        AND b.id = ?
+      GROUP BY m.id
+      ORDER BY m.modelName ASC
+      `,
       [id]
     );
 
     return res.status(200).json(rows);
   } catch (error) {
-    console.error("Error fetching brands:", error);
+    console.error("Error fetching models:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -584,9 +821,8 @@ export const addSeries = async (req, res) => {
 
     const seriesForComp = seriesName.trim().toLowerCase();
 
-    // ✅ Duplicate check within the same model
     const [checkExistingSeries] = await pool.query(
-      `SELECT * FROM tbl_series 
+      `SELECT * FROM tbl_series
        WHERE LOWER(TRIM(seriesName)) = ? AND modelId = ?`,
       [seriesForComp, modelId]
     );
@@ -598,20 +834,19 @@ export const addSeries = async (req, res) => {
       });
     }
 
-    // Insert new series
-    const [query] = await pool.query(
+    const [insertResult] = await pool.query(
       "INSERT INTO tbl_series (brandId, modelId, seriesName, status) VALUES (?, ?, ?, 'Y')",
       [brandId, modelId, seriesName.trim()]
     );
 
-    const insertedId = query.insertId;
+    const insertedId = insertResult.insertId;
     console.log("Inserted series ID:", insertedId);
 
-    // Fetch inserted series with brand & model
-    const [result] = await pool.query(
-      `SELECT s.id AS seriesId, s.seriesName, s.status,
-              m.id AS modelId, m.modelName,
-              b.id AS brandId, b.brandName
+    const [rows] = await pool.query(
+      `SELECT
+         s.id AS seriesId, s.seriesName, s.status,
+         m.id AS modelId, m.modelName,
+         b.id AS brandId, b.brandName
        FROM tbl_series s
        JOIN tbl_model m ON s.modelId = m.id
        JOIN tbl_brands b ON m.brandId = b.id
@@ -619,16 +854,27 @@ export const addSeries = async (req, res) => {
       [insertedId]
     );
 
-    if (result.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({
         status: 404,
         message: "Series not found or inactive",
       });
     }
 
+    const result = rows[0];
+
+    const querySearch =
+      `${result.brandName} ${result.modelName} ${result.seriesName}`.trim();
+    console.log("Query Search:", querySearch);
+
+    await pool.query(`UPDATE tbl_series SET seriesSearch = ? WHERE id = ?`, [
+      querySearch,
+      insertedId,
+    ]);
+
     res.status(201).json({
-      success: true,
-      data: result[0],
+      ...result,
+      seriesSearch: querySearch,
     });
   } catch (error) {
     console.error("Error adding Series:", error);
@@ -691,7 +937,7 @@ export const getSeries = async (req, res) => {
     const params = [];
 
     if (search) {
-      query += ` AND TRIM(LOWER(b.brandName)) LIKE ?`;
+      query += ` AND TRIM(LOWER(s.seriesSearch)) LIKE ?`;
       params.push(search);
     }
 
@@ -804,189 +1050,211 @@ export const deleteSereis = async (req, res) => {
   }
 };
 
-
-
 export const getCitites = async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 10000000;
     const page = parseInt(req.query.page) || 1;
     const offset = (page - 1) * limit;
     const search = req.query.search ? `%${req.query.search.trim()}%` : null;
- 
- 
+
     let query = `
       select * from tbl_cities
       WHERE status = 'Y'
     `;
     const params = [];
- 
+
     if (search) {
       query += ` AND TRIM(LOWER(cityName)) LIKE ?`;
       params.push(search.toLowerCase());
     }
- 
+
     query += ` ORDER BY TRIM(LOWER(cityName)) ASC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
- 
+
     const [rows] = await pool.query(query, params);
- 
+
     return res.status(200).json(rows);
- 
   } catch (error) {
     console.error("Error fetching models:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
- 
- 
+
 export const addCity = async (req, res) => {
   try {
     const { cityName } = req.body;
- 
+
     if (!cityName) {
       return res.status(400).json({
         status: 400,
         message: "cityName is required",
       });
-    };
- 
+    }
+
     const modelForComp = cityName.trim().toLowerCase();
- 
-        const [checkExistingBrand] = await pool.query(
-          `SELECT * FROM tbl_cities WHERE status = 'Y' and LOWER(TRIM(cityName)) = ?`,
-          [modelForComp]
-        );
- 
-        if (checkExistingBrand.length > 0) {
-          return res.status(400).json({
-            status: 400,
-            message: "City with this name already exists",
-          });
-        }    
- 
+
+    const [checkExistingBrand] = await pool.query(
+      `SELECT * FROM tbl_cities WHERE status = 'Y' and LOWER(TRIM(cityName)) = ?`,
+      [modelForComp]
+    );
+
+    if (checkExistingBrand.length > 0) {
+      return res.status(400).json({
+        status: 400,
+        message: "City with this name already exists",
+      });
+    }
+
     const [query] = await pool.query(
       "INSERT INTO tbl_cities (cityName) VALUES (?)",
       [cityName]
     );
- 
+
     const insertedId = query.insertId;
     console.log("Inserted model ID:", insertedId);
- 
+
     const [result] = await pool.query(
       `select * from tbl_cities where status = 'Y' and id = ?`,
       [insertedId]
     );
- 
+
     if (result.length === 0) {
       return res.status(404).json({
         status: 404,
         message: "City not found or inactive",
       });
     }
- 
+
     res.status(200).json({
-      ... result[0],
+      ...result[0],
     });
- 
   } catch (error) {
     console.error("Error adding City:", error);
     res.status(500).json({ status: 500, message: "Internal server error" });
   }
 };
- 
- 
- 
+
 export const updateCity = async (req, res) => {
   try {
     const id = req.params.id;
     const { cityName } = req.body;
- 
+
     const missingFields = [];
     if (!cityName) missingFields.push("cityName");
- 
+
     if (missingFields.length > 0) {
       return res.status(400).json({
-        message: `Missing: ${missingFields.join(", ")}`
+        message: `Missing: ${missingFields.join(", ")}`,
       });
     }
- 
+
     const [existingModels] = await pool.query(
       "SELECT * FROM tbl_cities WHERE id = ?",
       [id]
     );
- 
+
     if (existingModels.length === 0) {
       return res.status(404).json({
         success: false,
-        message: "City not found"
+        message: "City not found",
       });
     }
- 
-    await pool.query(
-      "UPDATE tbl_cities SET cityName = ? WHERE id = ?",
-      [cityName, id]
+
+    const [checkExistingBrand] = await pool.query(
+      `SELECT * FROM tbl_cities WHERE status = 'Y' and LOWER(TRIM(cityName)) = ?`,
+      [cityName]
     );
- 
-    const [result] = await pool.query(
-      "SELECT * FROM tbl_cities WHERE id = ?",
-      [id]
-    );
- 
+
+    if (checkExistingBrand.length > 0) {
+      return res.status(400).json({
+        status: 400,
+        message: "City with this name already exists",
+      });
+    }
+
+    await pool.query("UPDATE tbl_cities SET cityName = ? WHERE id = ?", [
+      cityName,
+      id,
+    ]);
+
+    const [result] = await pool.query("SELECT * FROM tbl_cities WHERE id = ?", [
+      id,
+    ]);
+
     if (result.length === 0) {
       return res.status(404).json({
         status: 404,
         message: "Updated city not found or inactive",
       });
     }
- 
+
     res.status(200).json({ ...result[0] });
- 
   } catch (error) {
     console.error("Error updating Model:", error);
     res.status(500).json({
       success: false,
       message: "Internal Server Error",
-      error: error.message
+      error: error.message,
     });
   }
 };
- 
- 
- 
+
 export const deleteCity = async (req, res) => {
-    try {
-        const id = req.params.id;
-        const [brandInfo] = await pool.query(
-            'SELECT * FROM tbl_cities WHERE id = ?',
-            [id]
-        );
- 
-        if (brandInfo.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'city info not found'
-            });
-        }
- 
-        const [deleted] = await pool.query(
-            `UPDATE tbl_cities SET status = 'N' WHERE id = ?`,
-            [id]
-        );
- 
-        const [result] = await pool.query(`SELECT * FROM tbl_cities WHERE status = 'N' and id = ?`, [id]);
- 
-        res.status(200).json({
-            ...result[0]
-        });
-    } catch (error) {
-        console.error(" Error deleting brand data:", error);
-        res.status(500).json({ status: 500, message: "Internal Server Error" });
+  try {
+    const id = req.params.id;
+
+    // 1️⃣ Get city info first (needed to check vehicles)
+    const [cityInfo] = await pool.query(
+      "SELECT * FROM tbl_cities WHERE id = ?",
+      [id]
+    );
+
+    if (cityInfo.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "City info not found",
+      });
     }
-}
- 
- 
- 
- 
+
+    const cityName = cityInfo[0].cityName;
+
+    // 2️⃣ Check if any active vehicle exists in this city (check first)
+    const [activeVehicles] = await pool.query(
+      "SELECT * FROM tbl_vehicles WHERE locationId = ?",
+      [cityName]
+    );
+
+    if (activeVehicles.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "City cannot be deleted because it has active vehicles assigned.",
+      });
+    }
+
+    // 3️⃣ Soft delete city (status = 'N')
+    await pool.query("UPDATE tbl_cities SET status = 'N' WHERE id = ?", [id]);
+
+    // 4️⃣ Return the deleted city info
+    const [deletedCity] = await pool.query(
+      "SELECT * FROM tbl_cities WHERE id = ?",
+      [id]
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "City deleted successfully.",
+      data: deletedCity[0],
+    });
+  } catch (error) {
+    console.error("Error deleting city:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal Server Error",
+    });
+  }
+};
+
 export const getCititesById = async (req, res) => {
   try {
     const id = req.params.id;
@@ -994,31 +1262,30 @@ export const getCititesById = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const offset = (page - 1) * limit;
     const search = req.query.search ? `%${req.query.search.trim()}%` : null;
- 
+
     let query = `
       SELECT * FROM tbl_cities
       WHERE status = 'Y'
     `;
-   
+
     const params = [];
- 
+
     if (id) {
       query += ` AND id = ?`;
       params.push(id);
     }
- 
+
     if (search) {
       query += ` AND TRIM(LOWER(cityName)) LIKE ?`;
       params.push(search.toLowerCase());
     }
- 
+
     query += ` ORDER BY TRIM(LOWER(cityName)) ASC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
- 
+
     const [rows] = await pool.query(query, params);
- 
-    return res.status(200).json({...rows[0]});
- 
+
+    return res.status(200).json({ ...rows[0] });
   } catch (error) {
     console.error("Error fetching cities:", error);
     res.status(500).json({ error: "Internal server error" });

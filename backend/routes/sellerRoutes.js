@@ -28,7 +28,11 @@ import {
   updateCalenderEvent,
   deleteCalenderEvent,
 } from "../controllers/calenderController.js";
-import { createBid, endBidding, updateCreateBid } from "../controllers/biddingController.js";
+import {
+  createBid,
+  endBidding,
+  updateCreateBid,
+} from "../controllers/biddingController.js";
 import {
   addLocation,
   deleteLocation,
@@ -85,7 +89,7 @@ export default (app) => {
 
   app.post("/seller/createBid", createBid);
 
-  app.put('/seller/updateCreateBid/:id', updateCreateBid);
+  app.put("/seller/updateCreateBid/:id", updateCreateBid);
 
   app.put("/seller/endBidding/:id", endBidding);
 
@@ -127,7 +131,15 @@ export default (app) => {
 
   app.get("/seller/getNonCertifiedVehicles", getNonCertifiedVehicles);
 
-  app.get("/getVehiclesById/:id", getVehiclesById);
+  // app.get("/getVehiclesById/:id", getVehiclesById);
+
+  // Add this route at the bottom of your customer routes
+  // app.get(
+  //   "/getVehiclesById/:id",
+  //   authenticateToken, // ✅ Protect route
+  //   getVehiclesById
+  // );
+  app.get("/getVehiclesById/:id", authenticateToken, getVehiclesById);
 
   app.get("/getVehiclesByUser/:id", getVehiclesByUser);
 

@@ -1,0 +1,10 @@
+{
+  "configurations": [
+    {
+      "type": "chrome",
+      "name": "http:///admin/getBrands",
+      "request": "launch",
+      "url": "http:///admin/getBrands"
+    }
+  ]
+}

@@ -1038,7 +1038,7 @@ DROP TABLE IF EXISTS `tbl_vehicles`;
 CREATE TABLE `tbl_vehicles` (
   `id` int NOT NULL AUTO_INCREMENT,
   `userId` int NOT NULL,
-  `vin` varchar(17) DEFAULT NULL,
+  `lot_number` varchar(17) DEFAULT NULL,
   `year` smallint NOT NULL,
   `make` varchar(50) NOT NULL,
   `model` varchar(50) NOT NULL,
@@ -1062,7 +1062,7 @@ CREATE TABLE `tbl_vehicles` (
   `certifyStatus` enum('Certified','Non-Certified') DEFAULT NULL,
   `vehicleImages` varchar(255) DEFAULT NULL,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `vin` (`vin`),
+  UNIQUE KEY `lot_number` (`lot_number`),
   KEY `tbl_vehicles_ibfk_1` (`userId`),
   CONSTRAINT `tbl_vehicles_ibfk_1` FOREIGN KEY (`userId`) REFERENCES `tbl_users` (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=20 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
