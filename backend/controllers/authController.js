@@ -320,11 +320,13 @@ export const getUsersById = async (req, res) => {
 //   }
 // };
 const transporter = nodemailer.createTransport({
-  service: "Gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
+ host: "smtp.gmail.com",
+port: 465,
+secure: true,
+auth: {
+  user: process.env.EMAIL_USER,
+  pass: process.env.EMAIL_PASS,
+},
 });
  
 export const registerBusinessMember = async (req, res) => {
@@ -431,7 +433,7 @@ export const RegisterverifyEmail = async (req, res) => {
     );
  
     // res.send("Email verified successfully! You can now login.");
-    return res.redirect("https://wheelbidz.technicmentors.com/login");
+    return res.redirect(`${process.env.FRONTEND1_URL}/login`);
   } catch (err) {
     console.error("Email verification error:", err);
     res.status(400).send("Verification link is invalid or expired");
