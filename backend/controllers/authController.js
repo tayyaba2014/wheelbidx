@@ -221,43 +221,127 @@ export const getUsersById = async (req, res) => {
   }
 };
 
+// export const registerBusinessMember = async (req, res) => {
+
+//   try {
+//     const { name, contact, cnic, address, postcode, email, password, role } =
+//       req.body;
+
+//     // if (!name || !email || !password || !role) {
+//     //   return res.status(400).json({ status: 400, message: "All fields are required" });
+//     // }
+//     const uploadedLocalFilePaths = [];
+//     let imagePublicId = null;
+
+//     // Upload profile image to Cloudinary
+//     if (req.file?.path) {
+//       uploadedLocalFilePaths.push(req.file.path);
+
+//       try {
+//         const { public_id } = await uploadPhoto(
+//           req.file.path,
+//           "profile_pictures"
+//         );
+//         imagePublicId = public_id;
+
+//         // Cleanup local file
+//         try {
+//           await fs.access(req.file.path);
+//           await fs.unlink(req.file.path);
+//         } catch (err) {
+//           console.warn(
+//             `Could not delete temp file ${req.file.path}:`,
+//             err.message
+//           );
+//         }
+//       } catch (uploadError) {
+//         console.error("Cloudinary upload failed:", uploadError.message);
+//       }
+//     }
+
+//     const [existing] = await pool.query(
+//       "SELECT * FROM tbl_users WHERE email = ?",
+//       [email]
+//     );
+//     if (existing.length > 0) {
+//       return res
+//         .status(400)
+//         .json({ status: 400, message: "Email already exists" });
+//     }
+
+//     const hashedPassword = await bcrypt.hash(password, 10);
+
+//     const [insertResult] = await pool.query(
+//       `INSERT INTO tbl_users (
+//         name, contact, cnic, address,
+//         postcode, email, password, image,
+//         date, role
+//       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_DATE(), ?)`,
+//       [
+//         name,
+//         contact,
+//         cnic,
+//         address,
+//         postcode,
+//         email,
+//         hashedPassword,
+//         imagePublicId ? JSON.stringify([imagePublicId]) : null,
+//         role,
+//       ]
+//     );
+
+//     const insertID = insertResult.insertId;
+
+//     await pool.query(
+//       `update tbl_users set emailVerifStatus = 'Active' where id = ?`,
+//       [insertID]
+//     );
+
+//     const newUserId = insertResult.insertId;
+//     const [newUser] = await pool.query("SELECT * FROM tbl_users WHERE id = ?", [
+//       newUserId,
+//     ]);
+
+//     // Attach full image URL to response (optional)
+//     const responseUser = { ...newUser[0] };
+//     responseUser.imageUrl = imagePublicId
+//       ? getPhotoUrl(imagePublicId, {
+//           width: 400,
+//           crop: "thumb",
+//           quality: "auto",
+//         })
+//       : null;
+//     delete responseUser.image; // hide public_id if you want
+
+//     res.status(201).json(responseUser);
+//   } catch (error) {
+//     console.error("Error registering business member:", error);
+//     res.status(500).json({ status: 500, message: "Internal Server Error" });
+//   }
+// };
+const transporter = nodemailer.createTransport({
+  service: "Gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
+ 
 export const registerBusinessMember = async (req, res) => {
   try {
     const { name, contact, cnic, address, postcode, email, password, role } =
       req.body;
-
-    // if (!name || !email || !password || !role) {
-    //   return res.status(400).json({ status: 400, message: "All fields are required" });
-    // }
-    const uploadedLocalFilePaths = [];
     let imagePublicId = null;
-
-    // Upload profile image to Cloudinary
+ 
     if (req.file?.path) {
-      uploadedLocalFilePaths.push(req.file.path);
-
-      try {
-        const { public_id } = await uploadPhoto(
-          req.file.path,
-          "profile_pictures"
-        );
-        imagePublicId = public_id;
-
-        // Cleanup local file
-        try {
-          await fs.access(req.file.path);
-          await fs.unlink(req.file.path);
-        } catch (err) {
-          console.warn(
-            `Could not delete temp file ${req.file.path}:`,
-            err.message
-          );
-        }
-      } catch (uploadError) {
-        console.error("Cloudinary upload failed:", uploadError.message);
-      }
+      const { public_id } = await uploadPhoto(
+        req.file.path,
+        "profile_pictures"
+      );
+      imagePublicId = public_id;
+      await fs.unlink(req.file.path);
     }
-
+ 
     const [existing] = await pool.query(
       "SELECT * FROM tbl_users WHERE email = ?",
       [email]
@@ -267,15 +351,13 @@ export const registerBusinessMember = async (req, res) => {
         .status(400)
         .json({ status: 400, message: "Email already exists" });
     }
-
+ 
     const hashedPassword = await bcrypt.hash(password, 10);
-
+ 
     const [insertResult] = await pool.query(
       `INSERT INTO tbl_users (
-        name, contact, cnic, address,
-        postcode, email, password, image,
-        date, role
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_DATE(), ?)`,
+        name, contact, cnic, address, postcode, email, password, image, date, role, emailVerifStatus
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_DATE(), ?, 'Non-Active')`,
       [
         name,
         contact,
@@ -288,20 +370,37 @@ export const registerBusinessMember = async (req, res) => {
         role,
       ]
     );
-
+ 
     const insertID = insertResult.insertId;
-
-    await pool.query(
-      `update tbl_users set emailVerifStatus = 'Active' where id = ?`,
-      [insertID]
+ 
+    // Generate email verification token
+    const emailToken = jwt.sign(
+      { id: insertID, email },
+      process.env.JWT_SECRET,
+      { expiresIn: "1d" } // token 1 din valid
     );
-
-    const newUserId = insertResult.insertId;
+ 
+    const verifyUrl = `${process.env.BASE_URL}/customer/RegisterverifyEmail?token=${emailToken}`;
+ 
+    const mailOptions = {
+      from: `"Wheelbidz" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: "Verify your Wheelbidz account",
+      html: `<p>Hi ${name},</p>
+             <p>Thank you for registering. Please verify your email by clicking the link below:</p>
+             <a href="${verifyUrl}">Verify Email</a>
+             <p>This link will expire in 24 hours.</p>`,
+    };
+ 
+    transporter.sendMail(mailOptions, (err, info) => {
+      if (err) console.error("Error sending email:", err);
+      else console.log("Verification email sent:", info.response);
+    });
+ 
     const [newUser] = await pool.query("SELECT * FROM tbl_users WHERE id = ?", [
-      newUserId,
+      insertID,
     ]);
-
-    // Attach full image URL to response (optional)
+ 
     const responseUser = { ...newUser[0] };
     responseUser.imageUrl = imagePublicId
       ? getPhotoUrl(imagePublicId, {
@@ -310,15 +409,34 @@ export const registerBusinessMember = async (req, res) => {
           quality: "auto",
         })
       : null;
-    delete responseUser.image; // hide public_id if you want
-
+    delete responseUser.image;
+ 
     res.status(201).json(responseUser);
   } catch (error) {
     console.error("Error registering business member:", error);
     res.status(500).json({ status: 500, message: "Internal Server Error" });
   }
 };
-
+ 
+export const RegisterverifyEmail = async (req, res) => {
+  const { token } = req.query;
+ 
+  if (!token) return res.status(400).send("Invalid verification link");
+ 
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    await pool.query(
+      "UPDATE tbl_users SET emailVerifStatus='active' WHERE id=?",
+      [decoded.id]
+    );
+ 
+    // res.send("Email verified successfully! You can now login.");
+    return res.redirect("http://localhost:5173/login");
+  } catch (err) {
+    console.error("Email verification error:", err);
+    res.status(400).send("Verification link is invalid or expired");
+  }
+};
 export const getuploadfile = async (req, res) => {
   res.sendFile(resolve("./controllers/uploadfile.html"));
 };

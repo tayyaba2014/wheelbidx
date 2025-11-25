@@ -61,6 +61,7 @@ import {
 import {
   registerByEmailOTP,
   registerEmailVerification,
+  RegisterverifyEmail,
   updatePassword,
   verifyEmail,
   verifyOTP,
@@ -69,6 +70,7 @@ import {
 const app = express();
 
 export default (app) => {
+   app.get("/customer/RegisterverifyEmail", RegisterverifyEmail);
   app.get("/customer/getVehicles", getVehicles);
 
   app.get("/customer/getSalesInfo", getSalesInfo);
