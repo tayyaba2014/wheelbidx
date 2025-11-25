@@ -431,7 +431,7 @@ export const RegisterverifyEmail = async (req, res) => {
     );
  
     // res.send("Email verified successfully! You can now login.");
-    return res.redirect("http://localhost:5173/login");
+    return res.redirect("https://wheelbidz.technicmentors.com/login");
   } catch (err) {
     console.error("Email verification error:", err);
     res.status(400).send("Verification link is invalid or expired");
